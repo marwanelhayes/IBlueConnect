@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Effect {
     ShowIncoming(String, String),
     HideIncoming(String),

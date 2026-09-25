@@ -2,6 +2,10 @@
 
 Status: product decisions agreed, including active-call exit behavior; three independent specification audits completed. The user reports an existing working phone-initiated audio route to the ASUS laptop and connected headphones. Agent-run hardware and desktop verification have not run.
 
+**2026-09-25 update:** The user replaced the application-owned incoming-call popup requirement with a native GNOME notification-center entry. It has Answer, Decline, and Ignore actions; Ignore removes only the entry, while the call continues ringing on the iPhone. The main window still opens only from its app icon. Earlier popup language below is historical and superseded by this decision. Live GNOME call acceptance remains to be tested.
+
+**Visual decision:** The user selected the native connected-device layout: an iPhone-to-laptop link graphic with calling status and battery. The same compact illustrated card appears on Recents, Keypad, and Contacts. The link is red with an X while calling is unavailable and blue when ready. The phone keeps a compact shape in maximized windows, the connection card has a 600 px maximum width, and the full keypad fits the default window. It follows the current system light or dark appearance through libadwaita. The other two comparison mockups were discarded.
+
 This replaces the initial specification. **Required** means a V1 release criterion. Proposed technology is not evidence of compatibility. There is no implementation yet.
 
 The interview decisions govern product behavior. Details such as the 500-entry history bound, startup defaults, and daemon/UI split are implementation defaults carried forward or selected for this design, not separate user approvals. They may be refined without weakening agreed behavior. See [review findings](IBlueConnect_Design_Review.md) for evidence and remaining risks.

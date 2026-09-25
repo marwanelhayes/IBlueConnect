@@ -9,6 +9,7 @@ use iblueconnect::call_log::{self, PhoneCall};
 use iblueconnect::contacts_store::{ContactStore, Entry};
 use iblueconnect::history::CallRecord;
 use iblueconnect::history_tracker::HistoryTracker;
+use iblueconnect::notifications::{self, IncomingAction, IncomingNotifications, NotificationEvent};
 use iblueconnect::ofono::{OfonoBackend, OfonoCall};
 use iblueconnect::pbap::pull_phonebook;
 use iblueconnect::presentation::{Effect, PresentationPolicy};
@@ -30,6 +31,7 @@ enum Operation {
     Contacts,
     SyncContacts,
     Recents,
+    BatteryStatus,
 }
 
 enum Reply {
@@ -37,6 +39,7 @@ enum Reply {
     Done(Result<(), String>),
     Contacts(String, ContactList),
     Recents(String, RecentList),
+    BatteryStatus(String),
 }
 
 enum Message {
@@ -45,6 +48,7 @@ enum Message {
     Lost(u64),
     Retry,
     ContactsPulled(Option<Vec<Entry>>, Option<Vec<PhoneCall>>),
+    Notification(NotificationEvent),
 }
 
 #[derive(Default)]
@@ -105,6 +109,12 @@ impl Service {
     }
 
     fn status(&self) -> zbus::fdo::Result<String> { Ok(self.snapshot()?.0) }
+    fn battery_status(&self) -> zbus::fdo::Result<String> {
+        match self.request(Operation::BatteryStatus)? {
+            Reply::BatteryStatus(status) => Ok(status),
+            _ => unreachable!(),
+        }
+    }
     fn answer(&self, id: &str) -> zbus::fdo::Result<()> {
         self.command(Operation::Action(CallAction::Answer, id.into()))
     }
@@ -135,6 +145,7 @@ struct Worker {
     epoch: ListenerEpoch,
     calls: Vec<OfonoCall>,
     presenter: Presenter,
+    notifications: IncomingNotifications,
     contacts: Contacts,
 }
 
@@ -144,7 +155,7 @@ impl Worker {
             Ok(history) => Some(history),
             Err(_) => { eprintln!("Call history unavailable"); None }
         });
-        Self { backend: Backend::new(), history, ofono: None, tx, session, lock_session, epoch: ListenerEpoch::default(), calls: Vec::new(), presenter: Presenter::new(), contacts: Contacts::open() }
+        Self { backend: Backend::new(), history, ofono: None, tx, notifications: IncomingNotifications::new(session.clone()), session, lock_session, epoch: ListenerEpoch::default(), calls: Vec::new(), presenter: Presenter::new(), contacts: Contacts::open() }
     }
 
     fn reconcile(&mut self, calls: &[OfonoCall]) {
@@ -165,17 +176,22 @@ impl Worker {
     }
 
     fn present(&mut self) {
-        let caller = caller_label(self.backend.observation(), &self.calls);
+        let contacts = matches!(self.backend.observation(), Observation::Call(_))
+            .then(|| self.contacts.entries()).unwrap_or_default();
+        let caller = caller_label(self.backend.observation(), &self.calls, &contacts);
         let lock_session = &self.lock_session;
+        let mut effects = Vec::new();
         self.presenter.observe_with(self.backend.observation(), &caller,
-            || (screen_locked(lock_session), dnd_active()), &mut run_effect);
-    }
-
-    fn refresh_audio(&mut self) -> bool {
-        if matches!(self.backend.observation(), Observation::Call(_)) {
-            self.backend.update_audio(observe_location())
-        } else {
-            false
+            || (screen_locked(lock_session), dnd_active()), &mut |effect| effects.push(effect.clone()));
+        for effect in effects {
+            match effect {
+                Effect::ShowIncoming(id, label) => {
+                    if self.notifications.show(&id, &label).is_err() { eprintln!("Incoming call notification unavailable"); }
+                }
+                Effect::HideIncoming(id) => self.notifications.hide(&id),
+                Effect::Alert(..) => run_effect(&effect),
+                _ => {}
+            }
         }
     }
 
@@ -222,13 +238,21 @@ impl Worker {
         if let Operation::Recents = operation {
             return Reply::Recents(self.contacts.status(), self.contacts.recents(&self.local_history()));
         }
+        if let Operation::BatteryStatus = operation {
+            return Reply::BatteryStatus(match self.ofono.as_ref().and_then(OfonoBackend::battery_percent) {
+                Some(percent) => format!("iPhone battery about {percent}%"),
+                None => "iPhone battery unavailable".into(),
+            });
+        }
         let refreshed = self.refresh();
         if let Operation::SyncContacts = operation {
             let result = if refreshed.is_ok() { self.sync_contacts() } else { Err("Phone connection required") };
             return Reply::Done(result.map_err(str::to_owned));
         }
         if let Operation::Snapshot = operation {
-            return Reply::Snapshot(public_snapshot(refreshed.is_ok(), self.backend.observation(), &self.calls));
+            let contacts = matches!(self.backend.observation(), Observation::Call(_))
+                .then(|| self.contacts.entries()).unwrap_or_default();
+            return Reply::Snapshot(public_snapshot(refreshed.is_ok(), self.backend.observation(), &self.calls, &contacts));
         }
         if let Err(message) = refreshed { return Reply::Done(Err(message)); }
         if let Err(message) = self.guard_operation(&operation) {
@@ -238,7 +262,7 @@ impl Worker {
             Operation::Action(action, id) => self.backend.plan_action(action, &id),
             Operation::Dial(number) => self.backend.plan_dial(&number),
             Operation::Tone(id, tone) => self.backend.plan_tone(&id, tone),
-            Operation::Snapshot | Operation::Contacts | Operation::SyncContacts | Operation::Recents => unreachable!(),
+            Operation::Snapshot | Operation::Contacts | Operation::SyncContacts | Operation::Recents | Operation::BatteryStatus => unreachable!(),
         };
         let command = match command {
             Ok(command) => command,
@@ -314,8 +338,12 @@ impl Contacts {
     }
 
     fn list(&self) -> ContactList {
-        self.store.as_ref().and_then(|store| store.list().ok()).unwrap_or_default().into_iter()
+        self.entries().into_iter()
             .map(|entry| (entry.name, entry.label, entry.number)).collect()
+    }
+
+    fn entries(&self) -> Vec<Entry> {
+        self.store.as_ref().and_then(|store| store.list().ok()).unwrap_or_default()
     }
 
     /// Downloads on its own thread so calls are never blocked by a slow phonebook.
@@ -424,28 +452,21 @@ fn dnd_active() -> bool {
 
 fn run_effect(effect: &Effect) {
     let (program, args): (std::path::PathBuf, &[&str]) = match effect {
-        Effect::ShowIncoming(..) => (popup_binary(), &["--incoming"]),
         Effect::Alert(..) => ("canberra-gtk-play".into(), &["-i", "phone-incoming-call"]),
         _ => return,
     };
     match std::process::Command::new(program).args(args).spawn() {
         // Reap in the background so finished helpers do not linger as zombies.
         Ok(mut child) => { thread::spawn(move || child.wait()); }
-        Err(_) => eprintln!("Incoming call alert could not start"),
+        Err(_) => eprintln!("Incoming call sound could not start"),
     }
 }
 
-fn popup_binary() -> std::path::PathBuf {
-    std::env::current_exe().ok()
-        .and_then(|exe| Some(exe.parent()?.join("iblueconnect")))
-        .filter(|path| path.is_file())
-        .unwrap_or_else(|| "iblueconnect".into())
-}
-
-fn caller_label(observed: &Observation, calls: &[OfonoCall]) -> String {
+fn caller_label(observed: &Observation, calls: &[OfonoCall], contacts: &[Entry]) -> String {
     let Observation::Call(current) = observed else { return String::new() };
     let call = calls.iter().find(|call| call.path == current.id);
     call.and_then(|call| call.name.as_deref().filter(|name| !name.is_empty())
+            .or_else(|| call.number.as_deref().and_then(|number| call_log::contact_name(number, contacts)))
             .or(call.number.as_deref().filter(|number| !number.is_empty())))
         .unwrap_or("Unknown caller").to_owned()
 }
@@ -489,7 +510,7 @@ fn command_error(error: CommandError) -> &'static str {
     }
 }
 
-fn public_snapshot(ready: bool, observed: &Observation, calls: &[OfonoCall]) -> Snapshot {
+fn public_snapshot(ready: bool, observed: &Observation, calls: &[OfonoCall], contacts: &[Entry]) -> Snapshot {
     let status = if !ready { "calling unavailable" }
         else if matches!(observed, Observation::Unavailable) { "manage calls on phone" }
         else { "ready" };
@@ -508,7 +529,7 @@ fn public_snapshot(ready: bool, observed: &Observation, calls: &[OfonoCall]) -> 
         }
         _ => (String::new(), "idle", "unknown"),
     };
-    (status.into(), id, phase.into(), audio.into(), caller_label(observed, calls))
+    (status.into(), id, phase.into(), audio.into(), caller_label(observed, calls, contacts))
 }
 
 fn next_message(rx: &Receiver<Message>, timeout: Duration) -> Option<Message> {
@@ -545,15 +566,28 @@ fn run_worker(rx: Receiver<Message>, tx: Sender<Message>, session: Connection, l
                 }
             }
             Message::Retry => {
-                // Unlock has no oFono event; recheck so a still-ringing call gets its popup.
-                worker.present();
-                if worker.refresh_audio() { worker.changed(); }
+                // Also detect a vanished oFono service if it could not emit ModemRemoved.
+                let before = worker.backend.observation().clone();
+                let lost = worker.refresh().is_err();
+                if lost || worker.backend.observation() != &before { worker.changed(); }
             }
+            Message::Notification(NotificationEvent::Action(id, key)) => {
+                if let Some((call_id, action)) = worker.notifications.action(id, &key) {
+                    worker.notifications.ignore(id);
+                    match action {
+                        IncomingAction::Answer => { let _ = worker.handle(Operation::Action(CallAction::Answer, call_id)); }
+                        IncomingAction::Decline => { let _ = worker.handle(Operation::Action(CallAction::Decline, call_id)); }
+                        IncomingAction::Ignore => {}
+                    }
+                }
+            }
+            Message::Notification(NotificationEvent::Closed(id)) => worker.notifications.ignore(id),
             Message::ContactsPulled(entries, calls) => {
                 let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |time| time.as_secs() as i64);
                 worker.contacts.finish(entries, calls, now);
                 worker.contacts_changed();
                 worker.recents_changed();
+                worker.changed();
             }
             _ => {}
         }
@@ -567,6 +601,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .serve_at(PATH, Service(tx.clone()))?
         .build()?;
     let lock_session = Connection::session()?;
+    let notification_session = Connection::session()?;
+    let notify_tx = tx.clone();
+    if notifications::listen(notification_session, move |event| { let _ = notify_tx.send(Message::Notification(event)); }).is_err() {
+        eprintln!("Desktop notification actions unavailable");
+    }
     thread::spawn(move || run_worker(rx, tx, session, lock_session)).join()
         .expect("calling worker stopped");
     Ok(())
@@ -621,7 +660,8 @@ mod tests {
         let lock_session = Builder::address(address.as_str()).unwrap().build().unwrap();
         thread::spawn(move || {
             let worker = Worker {
-                backend: Backend::new(), history: None, ofono: None, tx, session,
+                backend: Backend::new(), history: None, ofono: None, tx,
+                notifications: IncomingNotifications::new(session.clone()), session,
                 lock_session, epoch: ListenerEpoch::default(), calls: Vec::new(), presenter: Presenter::new(),
                 contacts: Contacts { store: None, running: false, failed: false },
             };
@@ -682,18 +722,32 @@ mod tests {
     #[test]
     fn snapshot_reports_call_phase_route_and_caller_label() {
         let observed = Observation::Call(Call::new("/modem0/voicecall01", CallPhase::Incoming, AudioLocation::Phone));
-        assert_eq!(public_snapshot(true, &observed, &[ofono_call(Some("123"), None)]),
+        assert_eq!(public_snapshot(true, &observed, &[ofono_call(Some("123"), None)], &[]),
             ("ready".into(), "/modem0/voicecall01".into(), "incoming".into(), "phone".into(), "123".into()));
+    }
+
+    #[test]
+    fn snapshot_uses_synced_contact_name_for_incoming_and_outgoing_calls() {
+        let mut contacts = test_contacts();
+        contacts.finish(Some(vec![entry("Alice", "+20 100 123 4567")]), None, 100);
+        let call = [ofono_call(Some("01001234567"), None)];
+        for phase in [CallPhase::Incoming, CallPhase::OutgoingDialing] {
+            let observed = Observation::Call(Call::new("/modem0/voicecall01", phase, AudioLocation::Phone));
+            assert_eq!(public_snapshot(true, &observed, &call, &contacts.entries()).4, "Alice");
+        }
+        contacts.finish(Some(vec![entry("Alice", "+20 100 123 4567"), entry("Other", "01001234567")]), None, 200);
+        let observed = Observation::Call(Call::new("/modem0/voicecall01", CallPhase::Active, AudioLocation::Phone));
+        assert_eq!(public_snapshot(true, &observed, &call, &contacts.entries()).4, "01001234567");
     }
 
     #[test]
     fn caller_label_prefers_name_then_number_then_unknown() {
         let observed = Observation::Call(Call::new("/modem0/voicecall01", CallPhase::Incoming, AudioLocation::Phone));
-        assert_eq!(caller_label(&observed, &[ofono_call(Some("123"), Some("Alice"))]), "Alice");
-        assert_eq!(caller_label(&observed, &[ofono_call(Some("123"), Some(""))]), "123");
-        assert_eq!(caller_label(&observed, &[ofono_call(Some(""), None)]), "Unknown caller");
-        assert_eq!(caller_label(&observed, &[]), "Unknown caller");
-        assert_eq!(caller_label(&Observation::Idle, &[ofono_call(Some("123"), None)]), "");
+        assert_eq!(caller_label(&observed, &[ofono_call(Some("123"), Some("Alice"))], &[]), "Alice");
+        assert_eq!(caller_label(&observed, &[ofono_call(Some("123"), Some(""))], &[]), "123");
+        assert_eq!(caller_label(&observed, &[ofono_call(Some(""), None)], &[]), "Unknown caller");
+        assert_eq!(caller_label(&observed, &[], &[]), "Unknown caller");
+        assert_eq!(caller_label(&Observation::Idle, &[ofono_call(Some("123"), None)], &[]), "");
     }
 
     fn presented(presenter: &mut Presenter, phase: CallPhase, locked: Option<bool>, dnd: bool) -> Vec<String> {
@@ -741,8 +795,8 @@ mod tests {
 
     #[test]
     fn unavailable_backend_and_unsupported_calls_are_distinct() {
-        assert_eq!(public_snapshot(false, &Observation::Unavailable, &[]).0, "calling unavailable");
-        assert_eq!(public_snapshot(true, &Observation::Unavailable, &[]).0, "manage calls on phone");
+        assert_eq!(public_snapshot(false, &Observation::Unavailable, &[], &[]).0, "calling unavailable");
+        assert_eq!(public_snapshot(true, &Observation::Unavailable, &[], &[]).0, "manage calls on phone");
     }
 
     #[test]

@@ -75,7 +75,10 @@ impl OfonoEvents {
     pub fn next_update(&mut self) -> Result<Vec<OfonoCall>, OfonoError> {
         loop {
             let message = self.messages.next().ok_or(OfonoError::BackendUnavailable)??;
-            if !is_call_event(&message, &self.backend.modem) {
+            if is_modem_removed(&message, &self.backend.modem) {
+                return Err(OfonoError::BackendUnavailable);
+            }
+            if !is_backend_event(&message, &self.backend.modem) {
                 continue;
             }
             // Resync after every event; queued signals may predate the initial GetCalls.
@@ -114,6 +117,16 @@ impl OfonoBackend {
         modem_address(&self.modem)
     }
 
+    /// HFP reports the phone's battery in six coarse steps (0–5), not an exact percentage.
+    pub fn battery_percent(&self) -> Option<u8> {
+        let handsfree = Proxy::new(&self.connection, "org.ofono", self.modem.as_str(), "org.ofono.Handsfree").ok()?;
+        let properties: Properties = handsfree.call("GetProperties", &()).ok()?;
+        properties.get("BatteryChargeLevel")
+            .and_then(|value| u8::try_from(value).ok())
+            .filter(|level| *level <= 5)
+            .map(|level| level * 20)
+    }
+
     /// Reconciles authoritative oFono call state; route remains unknown here.
     pub fn snapshot(&self) -> Result<Observation, OfonoError> {
         let calls = self.calls()?;
@@ -149,7 +162,6 @@ impl OfonoBackend {
         let rule = MatchRule::builder()
             .msg_type(message::Type::Signal)
             .sender("org.ofono")?
-            .path_namespace(self.modem.as_str())?
             .build();
         let messages = MessageIterator::for_match_rule(rule, &self.connection, Some(256))?;
         let calls = self.calls()?;
@@ -225,7 +237,7 @@ fn decode_call(path: OwnedObjectPath, properties: Properties) -> Result<OfonoCal
     })
 }
 
-fn is_call_event(message: &message::Message, modem: &str) -> bool {
+fn is_backend_event(message: &message::Message, modem: &str) -> bool {
     let header = message.header();
     let (Some(path), Some(interface), Some(member)) = (header.path(), header.interface(), header.member()) else {
         return false;
@@ -235,8 +247,18 @@ fn is_call_event(message: &message::Message, modem: &str) -> bool {
         ("org.ofono.VoiceCallManager", "CallAdded" | "CallRemoved") => path == modem,
         ("org.ofono.VoiceCall", "PropertyChanged" | "DisconnectReason") =>
             path.strip_prefix(modem).is_some_and(|rest| rest.starts_with('/')),
+        ("org.ofono.Handsfree", "PropertyChanged") => path == modem,
         _ => false,
     }
+}
+
+fn is_modem_removed(message: &message::Message, modem: &str) -> bool {
+    let header = message.header();
+    header.path().is_some_and(|path| path.as_str() == "/")
+        && header.interface().is_some_and(|interface| interface.as_str() == "org.ofono.Manager")
+        && header.member().is_some_and(|member| member.as_str() == "ModemRemoved")
+        && message.body().deserialize::<(OwnedObjectPath,)>()
+            .is_ok_and(|(path,)| path.as_str() == modem)
 }
 
 fn property_bool(properties: &Properties, name: &str) -> Option<bool> {
@@ -387,6 +409,28 @@ mod tests {
         }
     }
 
+    struct MockHandsfree;
+
+    #[zbus::interface(name = "org.ofono.Handsfree")]
+    impl MockHandsfree {
+        fn get_properties(&self) -> Properties {
+            HashMap::from([("BatteryChargeLevel".to_owned(), OwnedValue::from(4u8))])
+        }
+    }
+
+    #[test]
+    fn connected_phone_battery_is_reported_as_coarse_percentage() {
+        let (_bus, address) = PrivateBus::start();
+        let _server = Builder::address(address.as_str()).unwrap()
+            .name("org.ofono").unwrap()
+            .serve_at("/", MockManager).unwrap()
+            .serve_at("/test_modem", MockHandsfree).unwrap()
+            .build().unwrap();
+        let client = Builder::address(address.as_str()).unwrap().build().unwrap();
+        let backend = OfonoBackend::connect_on(client).unwrap();
+        assert_eq!(backend.battery_percent(), Some(80));
+    }
+
     #[test]
     fn private_bus_reconciles_and_guards_real_dbus_method_calls() {
         let (_bus, address) = PrivateBus::start();
@@ -426,6 +470,24 @@ mod tests {
         server.emit_signal(None::<&str>, "/test_modem", "org.ofono.VoiceCallManager", "CallRemoved",
             &(path,)).unwrap();
         assert!(events.next_update().unwrap().is_empty());
+    }
+
+    #[test]
+    fn removing_the_connected_modem_ends_its_event_stream() {
+        let (_bus, address) = PrivateBus::start();
+        let server = Builder::address(address.as_str()).unwrap()
+            .name("org.ofono").unwrap()
+            .serve_at("/", MockManager).unwrap()
+            .serve_at("/test_modem", MockCalls(Arc::new(Mutex::new(MockState::default())))).unwrap()
+            .build().unwrap();
+        let client = Builder::address(address.as_str()).unwrap().build().unwrap();
+        let backend = OfonoBackend::connect_on(client).unwrap();
+        let mut events = backend.subscribe().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || { let _ = tx.send(events.next_update()); });
+        server.emit_signal(None::<&str>, "/", "org.ofono.Manager", "ModemRemoved",
+            &(OwnedObjectPath::try_from("/test_modem").unwrap(),)).unwrap();
+        assert!(matches!(rx.recv_timeout(std::time::Duration::from_secs(1)), Ok(Err(OfonoError::BackendUnavailable))));
     }
 
     #[test]

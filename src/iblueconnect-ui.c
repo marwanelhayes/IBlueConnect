@@ -110,6 +110,11 @@ static const char *recent_title(const char *name, const char *number)
     return *name ? name : *number ? number : "Unknown caller";
 }
 
+static gboolean contacts_should_load(gboolean visible, gboolean loaded)
+{
+    return visible && !loaded;
+}
+
 static guint local_day(GDateTime *time)
 {
     int year, month, day;
@@ -141,13 +146,15 @@ static char *recent_when(gint64 started, GDateTime *now)
 
 typedef struct {
     gboolean popup;
-    GtkWidget *window, *status, *phase, *audio, *caller, *error;
+    GtkWidget *window, *status, *phase, *audio, *battery, *caller, *error;
+    GtkWidget *connection_hero, *hero_devices, *hero_details;
     GtkWidget *entry, *call, *answer, *decline, *hang_up, *ignore;
     GtkWidget *stack, *contacts, *search, *sync_status, *sync, *actions, *recents, *recents_status;
+    GtkWidget *recents_pages;
     GDBusProxy *daemon;
     char *state, *stage, *call_id;
     const char *method;
-    gboolean pending, answered_here, shown, ignored, pinned;
+    gboolean pending, answered_here, shown, ignored, pinned, contacts_loaded;
 } View;
 
 static View view;
@@ -237,6 +244,12 @@ static void show_state(View *self, const char *status, const char *id, const cha
         self->call_id = g_strdup(id);
     }
     set_text(self->status, status_text(status));
+    if (self->connection_hero) {
+        if (g_strcmp0(status, "ready") == 0)
+            gtk_widget_remove_css_class(self->connection_hero, "disconnected");
+        else
+            gtk_widget_add_css_class(self->connection_hero, "disconnected");
+    }
     set_text(self->phase, phase_text(phase));
     set_text(self->audio, audio_text(audio));
     set_text(self->caller, caller);
@@ -255,6 +268,22 @@ static void show_state(View *self, const char *status, const char *id, const cha
 static void show_unavailable(View *self)
 {
     show_state(self, "calling unavailable", "", "idle", "unknown", "");
+    set_text(self->battery, "iPhone battery unavailable");
+}
+
+static void on_battery(GObject *source, GAsyncResult *result, gpointer data)
+{
+    View *self = data;
+    GError *error = NULL;
+    GVariant *reply = g_dbus_proxy_call_finish(G_DBUS_PROXY(source), result, &error);
+    if (self->battery) {
+        const char *status = "iPhone battery unavailable";
+        if (reply && g_variant_is_of_type(reply, G_VARIANT_TYPE("(s)")))
+            g_variant_get(reply, "(&s)", &status);
+        set_text(self->battery, status);
+    }
+    if (reply) g_variant_unref(reply);
+    g_clear_error(&error);
 }
 
 static void on_snapshot(GObject *source, GAsyncResult *result, gpointer data)
@@ -281,6 +310,9 @@ static void refresh(View *self)
         show_unavailable(self);
         return;
     }
+    if (self->battery)
+        g_dbus_proxy_call(self->daemon, "BatteryStatus", NULL, G_DBUS_CALL_FLAGS_NO_AUTO_START,
+                          3000, NULL, on_battery, self);
     g_dbus_proxy_call(self->daemon, "Snapshot", NULL, G_DBUS_CALL_FLAGS_NO_AUTO_START,
                       3000, NULL, on_snapshot, self);
 }
@@ -457,6 +489,7 @@ static void on_contacts(GObject *source, GAsyncResult *result, gpointer data)
     GVariant *reply = g_dbus_proxy_call_finish(G_DBUS_PROXY(source), result, &error);
     if (!self->contacts) {
     } else if (!reply || !g_variant_is_of_type(reply, G_VARIANT_TYPE("(sa(sss))"))) {
+        self->contacts_loaded = FALSE;
         set_text(self->sync_status, "Contacts unavailable");
     } else {
         const char *status, *name, *kind, *number;
@@ -475,8 +508,19 @@ static void on_contacts(GObject *source, GAsyncResult *result, gpointer data)
 static void load_contacts(View *self)
 {
     if (self->popup || !self->contacts || !self->daemon || !g_dbus_proxy_get_name_owner(self->daemon)) return;
+    if (!contacts_should_load(self->stack &&
+            g_strcmp0(adw_view_stack_get_visible_child_name(ADW_VIEW_STACK(self->stack)), "contacts") == 0,
+            self->contacts_loaded)) return;
+    self->contacts_loaded = TRUE;
     g_dbus_proxy_call(self->daemon, "Contacts", NULL, G_DBUS_CALL_FLAGS_NO_AUTO_START,
                       10000, NULL, on_contacts, self);
+}
+
+static void on_page_changed(GObject *stack, GParamSpec *property, gpointer data)
+{
+    (void)stack;
+    (void)property;
+    load_contacts(data);
 }
 
 static void on_sync_done(GObject *source, GAsyncResult *result, gpointer data)
@@ -555,6 +599,9 @@ static void on_recents(GObject *source, GAsyncResult *result, gpointer data)
         gtk_list_box_remove_all(GTK_LIST_BOX(self->recents));
         while (g_variant_iter_next(entries, "(&s&s&sx)", &name, &number, &kind, &started))
             gtk_list_box_append(GTK_LIST_BOX(self->recents), recent_row(self, name, number, kind, started, now));
+        if (self->recents_pages)
+            gtk_stack_set_visible_child_name(GTK_STACK(self->recents_pages),
+                gtk_list_box_get_row_at_index(GTK_LIST_BOX(self->recents), 0) ? "list" : "empty");
         g_variant_iter_free(entries);
         g_date_time_unref(now);
     }
@@ -576,7 +623,10 @@ static void on_changed(GDBusProxy *proxy, const char *sender, const char *signal
     (void)sender;
     (void)parameters;
     if (g_strcmp0(signal, "Changed") == 0) refresh(data);
-    if (g_strcmp0(signal, "ContactsChanged") == 0) load_contacts(data);
+    if (g_strcmp0(signal, "ContactsChanged") == 0) {
+        ((View *)data)->contacts_loaded = FALSE;
+        load_contacts(data);
+    }
     if (g_strcmp0(signal, "RecentsChanged") == 0) load_recents(data);
 }
 
@@ -584,6 +634,7 @@ static void on_owner(GObject *proxy, GParamSpec *property, gpointer data)
 {
     (void)proxy;
     (void)property;
+    ((View *)data)->contacts_loaded = FALSE;
     refresh(data);
     load_contacts(data);
     load_recents(data);
@@ -674,7 +725,34 @@ static void load_style(void)
     gtk_css_provider_load_from_string(css,
         "button.answer { background: @success_bg_color; color: @success_fg_color; }"
         "row.missed .title { color: @error_color; }"
-        "button.keypad { min-width: 72px; min-height: 56px; font-size: 1.4em; border-radius: 28px; }");
+        "box.connection-hero { background: linear-gradient(135deg, alpha(@accent_bg_color, 0.20), @card_bg_color 72%);"
+        " border: 1px solid alpha(@accent_color, 0.35); border-radius: 22px; padding: 16px; }"
+        "box.connection-hero.disconnected { background: @card_bg_color; border-color: @borders; }"
+        "label.hero-heading { font-size: 1.35em; font-weight: 700; }"
+        "label.hero-status { font-size: 1.08em; font-weight: 650; }"
+        "label.battery-badge { background: alpha(@accent_bg_color, 0.12); border-radius: 999px;"
+        " padding: 5px 10px; font-size: 0.86em; }"
+        "box.phone-device { background: @window_bg_color; border: 3px solid @accent_color;"
+        " border-radius: 16px; padding: 6px; }"
+        "box.phone-notch { background: @accent_color; border-radius: 999px; }"
+        "box.phone-screen { background: alpha(@accent_bg_color, 0.18); border-radius: 8px; }"
+        "box.laptop-screen { background: @window_bg_color; border: 3px solid @accent_color;"
+        " border-radius: 8px; }"
+        "box.laptop-base { background: @accent_color; border-radius: 999px; }"
+        "box.connection-line { background: @accent_color; border-radius: 999px; }"
+        "box.connection-dot { background: @accent_color; border-radius: 999px; }"
+        "box.link-status { background: @accent_color; border-radius: 999px; }"
+        "box.link-status label { color: transparent; font-size: 1.2em; font-weight: 800; }"
+        "box.connection-hero.disconnected box.phone-device,"
+        "box.connection-hero.disconnected box.laptop-screen { border-color: @borders; }"
+        "box.connection-hero.disconnected box.phone-notch,"
+        "box.connection-hero.disconnected box.laptop-base,"
+        "box.connection-hero.disconnected box.connection-line,"
+        "box.connection-hero.disconnected box.connection-dot { background: @error_color; }"
+        "box.connection-hero.disconnected box.link-status { background: transparent; }"
+        "box.connection-hero.disconnected box.link-status label { color: @error_color; }"
+        "box.hero-details { border-top: 1px solid @borders; padding-top: 8px; }"
+        "button.keypad { min-width: 72px; min-height: 44px; font-size: 1.3em; border-radius: 22px; }");
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(css),
                                                GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
     g_object_unref(css);
@@ -683,10 +761,10 @@ static void load_style(void)
 static GtkWidget *build_keypad(View *self)
 {
     static const char *keys[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#" };
-    GtkWidget *page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 16);
+    GtkWidget *page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     gtk_box_append(GTK_BOX(page), dial_row(self));
     GtkWidget *grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(grid), 10);
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
     gtk_grid_set_column_spacing(GTK_GRID(grid), 10);
     gtk_grid_set_column_homogeneous(GTK_GRID(grid), TRUE);
     gtk_widget_set_halign(grid, GTK_ALIGN_CENTER);
@@ -707,7 +785,11 @@ static GtkWidget *build_keypad(View *self)
     g_signal_connect(back, "clicked", G_CALLBACK(on_backspace), self);
     gtk_grid_attach(GTK_GRID(grid), back, 2, 4, 1, 1);
     gtk_box_append(GTK_BOX(page), grid);
-    return page;
+    GtkWidget *scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), page);
+    gtk_widget_set_vexpand(scroll, TRUE);
+    return scroll;
 }
 
 static GtkWidget *scrolled_list(GtkWidget *list, const char *empty_text)
@@ -761,24 +843,121 @@ static GtkWidget *build_recents(View *self)
     g_signal_connect(sync, "clicked", G_CALLBACK(on_sync), self);
     gtk_box_append(GTK_BOX(sync_row), sync);
     gtk_box_append(GTK_BOX(page), sync_row);
-    gtk_box_append(GTK_BOX(page), scrolled_list(track(gtk_list_box_new(), &self->recents),
-        "No recent calls yet. Calls from the iPhone appear here after syncing."));
+    GtkWidget *pages = track(gtk_stack_new(), &self->recents_pages);
+    gtk_widget_set_vexpand(pages, TRUE);
+    gtk_stack_set_vhomogeneous(GTK_STACK(pages), FALSE);
+    GtkWidget *empty = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_widget_set_valign(empty, GTK_ALIGN_CENTER);
+    gtk_widget_set_halign(empty, GTK_ALIGN_CENTER);
+    GtkWidget *icon = gtk_image_new_from_icon_name("document-open-recent-symbolic");
+    gtk_image_set_pixel_size(GTK_IMAGE(icon), 42);
+    gtk_widget_add_css_class(icon, "dim-label");
+    gtk_box_append(GTK_BOX(empty), icon);
+    GtkWidget *empty_title = label("No recent calls", "title-3");
+    gtk_widget_set_halign(empty_title, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(empty), empty_title);
+    GtkWidget *description = label("Calls from your iPhone will appear here after syncing.", "dim-label");
+    gtk_label_set_justify(GTK_LABEL(description), GTK_JUSTIFY_CENTER);
+    gtk_widget_set_halign(description, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(empty), description);
+    gtk_stack_add_named(GTK_STACK(pages), empty, "empty");
+    gtk_stack_add_named(GTK_STACK(pages),
+        scrolled_list(track(gtk_list_box_new(), &self->recents), "No recent calls"), "list");
+    gtk_stack_set_visible_child_name(GTK_STACK(pages), "empty");
+    gtk_box_append(GTK_BOX(page), pages);
     return page;
 }
 
 static GtkWidget *build_main(View *self)
 {
     GtkWidget *body = gtk_box_new(GTK_ORIENTATION_VERTICAL, 16);
-    GtkWidget *details = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 24);
-    gtk_box_set_homogeneous(GTK_BOX(details), TRUE);
-    gtk_box_append(GTK_BOX(details), detail_row("Connection", &self->status));
-    gtk_box_append(GTK_BOX(details), detail_row("Call", &self->phase));
-    gtk_box_append(GTK_BOX(details), detail_row("Audio", &self->audio));
-    gtk_box_append(GTK_BOX(body), details);
+    GtkWidget *card = track(gtk_box_new(GTK_ORIENTATION_VERTICAL, 8), &self->connection_hero);
+    gtk_widget_add_css_class(card, "connection-hero");
+    gtk_widget_add_css_class(card, "disconnected");
+    GtkWidget *heading = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    GtkWidget *title = label("Your iPhone", "hero-heading");
+    gtk_widget_set_hexpand(title, TRUE);
+    gtk_box_append(GTK_BOX(heading), title);
+    gtk_box_append(GTK_BOX(heading), track(label("iPhone battery unavailable", "battery-badge"), &self->battery));
+    gtk_box_append(GTK_BOX(card), heading);
+
+    GtkWidget *devices = track(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0), &self->hero_devices);
+    gtk_widget_set_halign(devices, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(devices, GTK_ALIGN_CENTER);
+    gtk_widget_set_margin_top(devices, 4);
+    GtkWidget *phone = gtk_box_new(GTK_ORIENTATION_VERTICAL, 7);
+    gtk_widget_add_css_class(phone, "phone-device");
+    gtk_widget_set_size_request(phone, 48, 82);
+    GtkWidget *notch = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(notch, "phone-notch");
+    gtk_widget_set_size_request(notch, 22, 4);
+    gtk_widget_set_halign(notch, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(phone), notch);
+    GtkWidget *screen = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_add_css_class(screen, "phone-screen");
+    gtk_widget_set_vexpand(screen, TRUE);
+    gtk_box_append(GTK_BOX(phone), screen);
+    gtk_box_append(GTK_BOX(devices), phone);
+    GtkWidget *bridge = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_valign(bridge, GTK_ALIGN_CENTER);
+    GtkWidget *wire = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(wire, "connection-line");
+    gtk_widget_set_size_request(wire, 46, 3);
+    gtk_widget_set_valign(wire, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(bridge), wire);
+    GtkWidget *dot = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(dot, "link-status");
+    gtk_widget_set_size_request(dot, 20, 20);
+    gtk_box_append(GTK_BOX(dot), label("×", NULL));
+    gtk_box_append(GTK_BOX(bridge), dot);
+    wire = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(wire, "connection-line");
+    gtk_widget_set_size_request(wire, 46, 3);
+    gtk_widget_set_valign(wire, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(bridge), wire);
+    gtk_box_append(GTK_BOX(devices), bridge);
+    GtkWidget *laptop = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
+    gtk_widget_set_valign(laptop, GTK_ALIGN_CENTER);
+    screen = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_add_css_class(screen, "laptop-screen");
+    gtk_widget_set_size_request(screen, 94, 55);
+    gtk_box_append(GTK_BOX(laptop), screen);
+    GtkWidget *base = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(base, "laptop-base");
+    gtk_widget_set_size_request(base, 108, 7);
+    gtk_widget_set_halign(base, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(laptop), base);
+    gtk_box_append(GTK_BOX(devices), laptop);
+    gtk_box_append(GTK_BOX(card), devices);
+
+    GtkWidget *connection = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_set_halign(connection, GTK_ALIGN_CENTER);
+    GtkWidget *indicator = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(indicator, "connection-dot");
+    gtk_widget_set_size_request(indicator, 8, 8);
+    gtk_widget_set_valign(indicator, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(connection), indicator);
+    gtk_box_append(GTK_BOX(connection), track(label("Calling unavailable", "hero-status"), &self->status));
+    gtk_box_append(GTK_BOX(card), connection);
+    GtkWidget *call_details = track(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 24), &self->hero_details);
+    gtk_widget_add_css_class(call_details, "hero-details");
+    gtk_box_set_homogeneous(GTK_BOX(call_details), TRUE);
+    gtk_box_append(GTK_BOX(call_details), detail_row("Call", &self->phase));
+    gtk_box_append(GTK_BOX(call_details), detail_row("Audio", &self->audio));
+    gtk_box_append(GTK_BOX(card), call_details);
+    gtk_widget_set_visible(call_details, FALSE);
+    GtkWidget *clamp = adw_clamp_new();
+    adw_clamp_set_maximum_size(ADW_CLAMP(clamp), 600);
+    adw_clamp_set_child(ADW_CLAMP(clamp), card);
+    gtk_widget_set_vexpand(clamp, FALSE);
+    gtk_widget_set_valign(clamp, GTK_ALIGN_START);
+    gtk_box_append(GTK_BOX(body), clamp);
     gtk_box_append(GTK_BOX(body), track(label(NULL, "title-2"), &self->caller));
     gtk_box_append(GTK_BOX(body), call_actions(self));
     gtk_box_append(GTK_BOX(body), track(label(NULL, "error"), &self->error));
     GtkWidget *stack = track(adw_view_stack_new(), &self->stack);
+    adw_view_stack_set_vhomogeneous(ADW_VIEW_STACK(stack), FALSE);
+    g_signal_connect(stack, "notify::visible-child", G_CALLBACK(on_page_changed), self);
     gtk_widget_set_vexpand(stack, TRUE);
     adw_view_stack_add_titled_with_icon(ADW_VIEW_STACK(stack), build_recents(self), "recents", "Recents",
                                         "document-open-recent-symbolic");
@@ -859,6 +1038,7 @@ static void on_activate(GApplication *application, gpointer data)
         "org.iblueconnect.Daemon", NULL, on_proxy, self);
 }
 
+#ifndef IBLUECONNECT_UI_LAYOUT_TEST
 int main(int argc, char **argv)
 {
     /* The daemon launches `--incoming`; a separate app ID keeps it from opening the main window. */
@@ -872,6 +1052,117 @@ int main(int argc, char **argv)
     g_object_unref(application);
     return result;
 }
+#else
+int main(void)
+{
+    gtk_init();
+    adw_init();
+    load_style();
+    View screen = {0};
+    GtkWidget *body = build_main(&screen);
+    int min_height;
+    gtk_widget_measure(body, GTK_ORIENTATION_VERTICAL, 452, &min_height, NULL, NULL, NULL);
+    g_assert_cmpint(min_height, <=, 560);
+    adw_view_stack_set_visible_child_name(ADW_VIEW_STACK(screen.stack), "keypad");
+    gtk_widget_measure(body, GTK_ORIENTATION_VERTICAL, 452, &min_height, NULL, NULL, NULL);
+    g_assert_cmpint(min_height, <=, 560);
+    GtkWidget *card = screen.connection_hero;
+    g_assert_true(gtk_widget_has_css_class(card, "connection-hero"));
+    g_assert_nonnull(screen.status);
+    g_assert_true(gtk_widget_has_css_class(card, "disconnected"));
+    show_state(&screen, "ready", "", "idle", "unknown", "");
+    g_assert_false(gtk_widget_has_css_class(card, "disconnected"));
+    show_state(&screen, "calling unavailable", "", "idle", "unknown", "");
+    g_assert_true(gtk_widget_has_css_class(card, "disconnected"));
+    g_assert_nonnull(screen.battery);
+    g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(screen.battery)), ==, "iPhone battery unavailable");
+    g_assert_nonnull(screen.recents_pages);
+    g_assert_cmpstr(gtk_stack_get_visible_child_name(GTK_STACK(screen.recents_pages)), ==, "empty");
+    GtkWidget *window = adw_window_new();
+    adw_window_set_content(ADW_WINDOW(window), body);
+    gtk_window_set_default_size(GTK_WINDOW(window), 500, 680);
+    gtk_window_present(GTK_WINDOW(window));
+    screen.window = window;
+    adw_view_stack_set_visible_child_name(ADW_VIEW_STACK(screen.stack), "keypad");
+    while (g_main_context_pending(NULL)) g_main_context_iteration(NULL, FALSE);
+    g_assert_true(gtk_widget_get_visible(screen.hero_devices));
+    GtkWidget *keypad = adw_view_stack_get_visible_child(ADW_VIEW_STACK(screen.stack));
+    GtkWidget *keypad_page = gtk_scrolled_window_get_child(GTK_SCROLLED_WINDOW(keypad));
+    if (GTK_IS_VIEWPORT(keypad_page)) keypad_page = gtk_viewport_get_child(GTK_VIEWPORT(keypad_page));
+    GtkWidget *keypad_grid = gtk_widget_get_last_child(keypad_page);
+    GtkWidget *last_key = gtk_grid_get_child_at(GTK_GRID(keypad_grid), 2, 4);
+    graphene_rect_t last_key_bounds;
+    g_assert_true(gtk_widget_compute_bounds(last_key, keypad, &last_key_bounds));
+    g_assert_cmpfloat(last_key_bounds.origin.y + last_key_bounds.size.height, <=, gtk_widget_get_height(keypad));
+    int keypad_card_height;
+    gtk_widget_measure(card, GTK_ORIENTATION_VERTICAL, 450, &keypad_card_height, NULL, NULL, NULL);
+    adw_view_stack_set_visible_child_name(ADW_VIEW_STACK(screen.stack), "recents");
+    while (g_main_context_pending(NULL)) g_main_context_iteration(NULL, FALSE);
+    int other_card_height;
+    gtk_widget_measure(card, GTK_ORIENTATION_VERTICAL, 450, &other_card_height, NULL, NULL, NULL);
+    g_assert_cmpint(other_card_height, ==, keypad_card_height);
+    adw_view_stack_set_visible_child_name(ADW_VIEW_STACK(screen.stack), "contacts");
+    while (g_main_context_pending(NULL)) g_main_context_iteration(NULL, FALSE);
+    gtk_widget_measure(card, GTK_ORIENTATION_VERTICAL, 450, &other_card_height, NULL, NULL, NULL);
+    g_assert_cmpint(other_card_height, ==, keypad_card_height);
+    adw_view_stack_set_visible_child_name(ADW_VIEW_STACK(screen.stack), "keypad");
+    show_state(&screen, "ready", "sample-call", "active", "laptop", "Sample caller");
+    while (g_main_context_pending(NULL)) g_main_context_iteration(NULL, FALSE);
+    g_assert_true(gtk_widget_compute_bounds(last_key, keypad, &last_key_bounds));
+    g_assert_cmpfloat(last_key_bounds.origin.y + last_key_bounds.size.height, <=, gtk_widget_get_height(keypad));
+    AdwStyleManager *style = adw_style_manager_get_for_display(gdk_display_get_default());
+    GdkRGBA light_card, dark_card, light_accent, dark_accent;
+    adw_style_manager_set_color_scheme(style, ADW_COLOR_SCHEME_FORCE_LIGHT);
+    while (g_main_context_pending(NULL)) g_main_context_iteration(NULL, FALSE);
+    g_assert_true(gtk_style_context_lookup_color(gtk_widget_get_style_context(card),
+                                                 "card_bg_color", &light_card));
+    g_assert_true(gtk_style_context_lookup_color(gtk_widget_get_style_context(card),
+                                                 "accent_color", &light_accent));
+    adw_style_manager_set_color_scheme(style, ADW_COLOR_SCHEME_FORCE_DARK);
+    while (g_main_context_pending(NULL)) g_main_context_iteration(NULL, FALSE);
+    g_assert_true(gtk_style_context_lookup_color(gtk_widget_get_style_context(card),
+                                                 "card_bg_color", &dark_card));
+    g_assert_true(gtk_style_context_lookup_color(gtk_widget_get_style_context(card),
+                                                 "accent_color", &dark_accent));
+    g_assert_false(gdk_rgba_equal(&light_card, &dark_card));
+    g_assert_false(gdk_rgba_equal(&light_accent, &dark_accent));
+    gtk_window_destroy(GTK_WINDOW(window));
+
+    View tall = {0};
+    GtkWidget *tall_body = build_main(&tall);
+    GtkWidget *devices = tall.hero_devices;
+    GtkWidget *phone = gtk_widget_get_first_child(devices);
+    GtkWidget *tall_window = adw_window_new();
+    adw_window_set_content(ADW_WINDOW(tall_window), tall_body);
+    gtk_window_set_default_size(GTK_WINDOW(tall_window), 500, 1000);
+    gtk_window_present(GTK_WINDOW(tall_window));
+    while (g_main_context_pending(NULL)) g_main_context_iteration(NULL, FALSE);
+    g_assert_cmpint(gtk_widget_get_height(tall_window), >=, 900);
+    g_assert_cmpint(gtk_widget_get_height(phone), >=, 60);
+    g_assert_cmpint(gtk_widget_get_height(phone), <=, 110);
+    g_assert_cmpint(gtk_widget_get_height(phone), >=, 2 * gtk_widget_get_width(phone));
+    g_assert_cmpint(gtk_widget_get_height(phone), <=, 3 * gtk_widget_get_width(phone));
+    GtkWidget *link = gtk_widget_get_next_sibling(gtk_widget_get_first_child(
+        gtk_widget_get_next_sibling(phone)));
+    GtkWidget *first_wire = gtk_widget_get_prev_sibling(link);
+    g_assert_cmpint(gtk_widget_get_height(first_wire), <=, 4);
+    GtkWidget *cross = gtk_widget_get_first_child(link);
+    g_assert_true(GTK_IS_LABEL(cross));
+    g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(cross)), ==, "×");
+    gtk_window_destroy(GTK_WINDOW(tall_window));
+
+    View wide = {0};
+    GtkWidget *wide_window = adw_window_new();
+    adw_window_set_content(ADW_WINDOW(wide_window), build_main(&wide));
+    gtk_window_set_default_size(GTK_WINDOW(wide_window), 1100, 900);
+    gtk_window_present(GTK_WINDOW(wide_window));
+    while (g_main_context_pending(NULL)) g_main_context_iteration(NULL, FALSE);
+    g_assert_cmpint(gtk_widget_get_width(wide_window), >=, 1000);
+    g_assert_cmpint(gtk_widget_get_width(wide.connection_hero), <=, 600);
+    gtk_window_destroy(GTK_WINDOW(wide_window));
+    return 0;
+}
+#endif
 #else
 int main(void)
 {
@@ -937,6 +1228,10 @@ int main(void)
     g_assert_cmpstr(recent_title("Alice", "123"), ==, "Alice");
     g_assert_cmpstr(recent_title("", "123"), ==, "123");
     g_assert_cmpstr(recent_title("", ""), ==, "Unknown caller");
+
+    g_assert_true(contacts_should_load(TRUE, FALSE));
+    g_assert_false(contacts_should_load(FALSE, FALSE));
+    g_assert_false(contacts_should_load(TRUE, TRUE));
 
     GDateTime *now = g_date_time_new_local(2026, 9, 24, 15, 0, 0);
     struct { int day, hour, minute; const char *want; } whens[] = {

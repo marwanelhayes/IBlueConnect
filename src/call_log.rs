@@ -140,6 +140,15 @@ fn number_key(number: &str) -> String {
     digits[digits.len().saturating_sub(9)..].to_owned()
 }
 
+/// Returns a name only when every contact matching this number agrees on it.
+pub fn contact_name<'a>(number: &str, contacts: &'a [Entry]) -> Option<&'a str> {
+    let key = number_key(number);
+    if key.is_empty() { return None; }
+    let mut matches = contacts.iter().filter(|entry| number_key(&entry.number) == key);
+    let name = matches.next()?.name.as_str();
+    matches.all(|entry| entry.name == name).then_some(name)
+}
+
 fn same_direction(direction: Direction, kind: Kind) -> bool {
     match direction {
         Direction::Incoming => kind != Kind::Dialed,
