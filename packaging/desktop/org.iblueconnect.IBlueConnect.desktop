@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=IBlueConnect
+Comment=View iPhone call status
+Exec=iblueconnect
+Icon=call-start-symbolic
+Terminal=false
+Categories=Utility;

@@ -1,0 +1,12 @@
+[Unit]
+Description=IBlueConnect calling daemon
+
+[Service]
+Type=dbus
+BusName=org.iblueconnect.Daemon
+ExecStart=%h/.local/bin/iblueconnectd
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
