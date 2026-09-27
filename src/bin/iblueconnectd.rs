@@ -239,10 +239,7 @@ impl Worker {
             return Reply::Recents(self.contacts.status(), self.contacts.recents(&self.local_history()));
         }
         if let Operation::BatteryStatus = operation {
-            return Reply::BatteryStatus(match self.ofono.as_ref().and_then(OfonoBackend::battery_percent) {
-                Some(percent) => format!("iPhone battery about {percent}%"),
-                None => "iPhone battery unavailable".into(),
-            });
+            return Reply::BatteryStatus(battery_status(self.ofono.as_ref().and_then(OfonoBackend::battery_level)));
         }
         let refreshed = self.refresh();
         if let Operation::SyncContacts = operation {
@@ -397,6 +394,11 @@ fn contact_status(running: bool, failed: bool, last_sync: Option<&str>) -> Strin
     }
 }
 
+fn battery_status(level: Option<u8>) -> String {
+    level.map_or_else(|| "iPhone battery unavailable".into(),
+        |level| format!("iPhone battery level {level}/5 (approximate)"))
+}
+
 fn contacts_path() -> Option<std::path::PathBuf> {
     let base = std::env::var_os("XDG_DATA_HOME")
         .filter(|value| !value.is_empty())
@@ -426,6 +428,7 @@ impl Presenter {
     /// Reads lock/DND only while a call is or was ringing, so idle costs nothing.
     fn observe_with(&mut self, observed: &Observation, caller: &str, desktop: impl FnOnce() -> (Option<bool>, bool),
                     run: &mut impl FnMut(&Effect)) {
+        if matches!(observed, Observation::Idle | Observation::Unavailable) { self.policy.call_list_cleared(); }
         let incoming = match observed {
             Observation::Call(call) if call.phase == CallPhase::Incoming => Some(call.id.clone()),
             _ => None,
@@ -573,11 +576,14 @@ fn run_worker(rx: Receiver<Message>, tx: Sender<Message>, session: Connection, l
             }
             Message::Notification(NotificationEvent::Action(id, key)) => {
                 if let Some((call_id, action)) = worker.notifications.action(id, &key) {
-                    worker.notifications.ignore(id);
                     match action {
-                        IncomingAction::Answer => { let _ = worker.handle(Operation::Action(CallAction::Answer, call_id)); }
-                        IncomingAction::Decline => { let _ = worker.handle(Operation::Action(CallAction::Decline, call_id)); }
-                        IncomingAction::Ignore => {}
+                        IncomingAction::Answer | IncomingAction::Decline => {
+                            let call_action = if action == IncomingAction::Answer { CallAction::Answer } else { CallAction::Decline };
+                            let succeeded = matches!(worker.handle(Operation::Action(call_action, call_id)), Reply::Done(Ok(())));
+                            worker.notifications.complete_action(id, succeeded);
+                            if !succeeded { eprintln!("Incoming call action failed"); }
+                        }
+                        IncomingAction::Ignore => worker.notifications.ignore(id),
                     }
                 }
             }
@@ -714,6 +720,12 @@ mod tests {
         assert!(answer_guard(&decline, || panic!("lock query should be skipped")).is_ok());
     }
 
+    #[test]
+    fn battery_status_reports_the_coarse_phone_level() {
+        assert_eq!(battery_status(Some(5)), "iPhone battery level 5/5 (approximate)");
+        assert_eq!(battery_status(None), "iPhone battery unavailable");
+    }
+
     fn ofono_call(number: Option<&str>, name: Option<&str>) -> OfonoCall {
         OfonoCall { path: "/modem0/voicecall01".into(), state: "incoming".into(), multiparty: false,
             number: number.map(str::to_owned), name: name.map(str::to_owned) }
@@ -791,6 +803,17 @@ mod tests {
         presented(&mut presenter, CallPhase::Incoming, Some(false), false);
         presented(&mut presenter, CallPhase::Active, Some(false), false);
         assert!(presented(&mut presenter, CallPhase::Incoming, Some(false), false).is_empty());
+    }
+
+    #[test]
+    fn a_new_call_after_idle_can_reuse_the_previous_ofono_path() {
+        let mut presenter = Presenter::new();
+        assert!(!presented(&mut presenter, CallPhase::Incoming, Some(false), false).is_empty());
+        let mut ended = Vec::new();
+        presenter.observe(&Observation::Idle, "", Some(false), false, &mut |effect| ended.push(effect.clone()));
+        assert_eq!(ended, [Effect::HideIncoming("call-1".into())]);
+        assert_eq!(presented(&mut presenter, CallPhase::Incoming, Some(false), false),
+            [r#"ShowIncoming("call-1", "Alice")"#, r#"Alert("call-1", 0)"#]);
     }
 
     #[test]

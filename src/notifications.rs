@@ -15,7 +15,7 @@ pub enum NotificationEvent { Action(u32, String), Closed(u32) }
 
 pub fn listen(connection: Connection, on_event: impl Fn(NotificationEvent) + Send + 'static) -> zbus::Result<()> {
     let rule = MatchRule::builder().msg_type(message::Type::Signal)
-        .sender(DEST)?.path(PATH)?.interface(DEST)?.build();
+        .sender("org.gnome.Shell")?.path(PATH)?.interface(DEST)?.build();
     let mut messages = MessageIterator::for_match_rule(rule, &connection, Some(64))?;
     thread::spawn(move || {
         for message in &mut messages {
@@ -83,6 +83,7 @@ impl IncomingNotifications {
             ("desktop-entry", Value::from("org.iblueconnect.IBlueConnect")),
             ("resident", Value::from(true)),
             ("suppress-sound", Value::from(true)),
+            ("urgency", Value::from(2u8)),
         ].into();
         let notification_id: u32 = proxy.call("Notify", &(
             "IBlueConnect", 0u32, "call-start-symbolic", notice.summary, notice.body,
@@ -110,6 +111,10 @@ impl IncomingNotifications {
                 self.close_current();
             }
         }
+    }
+
+    pub fn complete_action(&mut self, notification_id: u32, succeeded: bool) {
+        if succeeded { self.ignore(notification_id); }
     }
 
     fn close_current(&mut self) {
@@ -150,10 +155,12 @@ mod tests {
     impl FakeNotifications {
         fn notify(&self, _app_name: &str, _replaces_id: u32, _app_icon: &str,
                   summary: &str, _body: &str, actions: Vec<String>,
-                  _hints: HashMap<String, OwnedValue>, _expire_timeout: i32) -> u32 {
+                  hints: HashMap<String, OwnedValue>, _expire_timeout: i32) -> u32 {
             assert_eq!(summary, "Incoming call");
             assert_eq!(actions, ["answer", "Answer", "decline", "Decline", "ignore", "Ignore"]);
-            self.0.lock().unwrap().push("notify".into());
+            let urgency = hints.get("urgency").and_then(|value| value.try_clone().ok())
+                .and_then(|value| u8::try_from(value).ok()).unwrap_or(0);
+            self.0.lock().unwrap().push(format!("notify:{urgency}"));
             42
         }
         fn close_notification(&self, id: u32) {
@@ -188,21 +195,39 @@ mod tests {
         incoming.ignore(42);
         assert_eq!(incoming.action(42, "answer"), None);
         incoming.show("call-1", "Sample Caller").unwrap();
-        assert_eq!(*events.lock().unwrap(), ["notify", "close"]);
+        assert_eq!(*events.lock().unwrap(), ["notify:2", "close"]);
         incoming.hide("call-1");
     }
 
     #[test]
     fn desktop_action_signal_is_delivered_to_daemon_listener() {
         let (_bus, address) = PrivateBus::start();
-        let server = Builder::address(address.as_str()).unwrap()
+        let _notifications = Builder::address(address.as_str()).unwrap()
             .name(DEST).unwrap().serve_at(PATH, FakeNotifications(Arc::new(Mutex::new(Vec::new())))).unwrap()
             .build().unwrap();
+        let shell = Builder::address(address.as_str()).unwrap()
+            .name("org.gnome.Shell").unwrap().build().unwrap();
         let client = Builder::address(address.as_str()).unwrap().build().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         listen(client, move |event| { let _ = tx.send(event); }).unwrap();
-        server.emit_signal(None::<&str>, PATH, DEST, "ActionInvoked", &(42u32, "answer")).unwrap();
+        shell.emit_signal(None::<&str>, PATH, DEST, "ActionInvoked", &(42u32, "answer")).unwrap();
         assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(2)),
                    Ok(NotificationEvent::Action(42, "answer".into())));
+    }
+
+    #[test]
+    fn failed_answer_keeps_notification_actionable_for_retry() {
+        let (_bus, address) = PrivateBus::start();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let _server = Builder::address(address.as_str()).unwrap()
+            .name(DEST).unwrap().serve_at(PATH, FakeNotifications(events.clone())).unwrap().build().unwrap();
+        let client = Builder::address(address.as_str()).unwrap().build().unwrap();
+        let mut incoming = IncomingNotifications::new(client);
+        incoming.show("call-1", "Sample Caller").unwrap();
+        incoming.complete_action(42, false);
+        assert_eq!(incoming.action(42, "answer"), Some(("call-1".into(), IncomingAction::Answer)));
+        incoming.complete_action(42, true);
+        assert_eq!(incoming.action(42, "answer"), None);
+        assert_eq!(*events.lock().unwrap(), ["notify:2", "close"]);
     }
 }

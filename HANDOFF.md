@@ -2,6 +2,16 @@
 
 Date: 2026-09-24. Workspace: `/home/marwan-ahmed/Work/IBlueConnect`. Supersedes the older /tmp handoffs.
 
+## 2026-09-27 update
+
+Incoming GNOME notifications now request critical urgency so GNOME can show the banner over fullscreen video; their own sound remains suppressed, leaving the app's one alert. A failed Answer/Decline action keeps the notification available to retry, and the daemon logs a caller-free failure marker. The battery label now reports the raw, approximate oFono HFP level (0–5), because the observed phone exposes no finer level. Offline Rust and GTK checks pass, and the user daemon was installed and restarted after two fresh private Snapshots both reported `idle`. The live result is recorded below.
+
+The first user-operated retest still showed no banner over fullscreen video; the user answered on the iPhone. A new offline regression reproduced a second-call suppression: the presenter remembered an oFono call path after returning to `idle`, although oFono may reuse it for a later call. The presenter now clears that seen-call set on `Idle` or `Unavailable`. The full Rust suite passes, and this revision was installed and restarted only after fresh private idle Snapshots.
+
+A later user-operated call confirmed the incoming banner now appears, but Answer, Decline, and Ignore clicks did nothing. A harmless live GNOME notification action test established the cause: GNOME emits `ActionInvoked` from the `org.gnome.Shell` bus owner, while the daemon filtered for the `org.freedesktop.Notifications` owner. A private-bus regression failed with the old filter and passed after changing it to the verified Shell sender. The full offline Rust suite passes and the repaired daemon is installed/running after private idle checks.
+
+The final user-operated incoming call confirmed the banner appeared and pressing Answer connected the call. The daemon returned to `idle` afterward with zero caller-free action-failure markers. Decline and Ignore use the same corrected signal listener but have not been separately live-verified.
+
 ## 2026-09-25 update
 
 The user replaced the incoming GTK popup with a native GNOME notification-center entry carrying Answer, Decline, and Ignore. Ignore removes only the entry. The daemon now posts and closes that notification directly; the older popup details below are historical. Caller names resolve from the synced contact cache, the main UI shows approximate iPhone battery percentage from oFono's 0–5 level, and Contacts rows load when the Contacts tab opens. Charging state is unavailable from the observed phone interfaces. Rust and C offline checks pass; incoming-call behavior still needs a user-coordinated live test.

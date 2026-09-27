@@ -118,13 +118,12 @@ impl OfonoBackend {
     }
 
     /// HFP reports the phone's battery in six coarse steps (0–5), not an exact percentage.
-    pub fn battery_percent(&self) -> Option<u8> {
+    pub fn battery_level(&self) -> Option<u8> {
         let handsfree = Proxy::new(&self.connection, "org.ofono", self.modem.as_str(), "org.ofono.Handsfree").ok()?;
         let properties: Properties = handsfree.call("GetProperties", &()).ok()?;
         properties.get("BatteryChargeLevel")
             .and_then(|value| u8::try_from(value).ok())
             .filter(|level| *level <= 5)
-            .map(|level| level * 20)
     }
 
     /// Reconciles authoritative oFono call state; route remains unknown here.
@@ -414,12 +413,12 @@ mod tests {
     #[zbus::interface(name = "org.ofono.Handsfree")]
     impl MockHandsfree {
         fn get_properties(&self) -> Properties {
-            HashMap::from([("BatteryChargeLevel".to_owned(), OwnedValue::from(4u8))])
+            HashMap::from([("BatteryChargeLevel".to_owned(), OwnedValue::from(5u8))])
         }
     }
 
     #[test]
-    fn connected_phone_battery_is_reported_as_coarse_percentage() {
+    fn connected_phone_battery_is_reported_as_raw_level() {
         let (_bus, address) = PrivateBus::start();
         let _server = Builder::address(address.as_str()).unwrap()
             .name("org.ofono").unwrap()
@@ -428,7 +427,7 @@ mod tests {
             .build().unwrap();
         let client = Builder::address(address.as_str()).unwrap().build().unwrap();
         let backend = OfonoBackend::connect_on(client).unwrap();
-        assert_eq!(backend.battery_percent(), Some(80));
+        assert_eq!(backend.battery_level(), Some(5));
     }
 
     #[test]

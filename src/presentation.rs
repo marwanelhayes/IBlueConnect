@@ -37,6 +37,8 @@ impl PresentationPolicy {
         Self { locked, dnd, ringing: None, missed: Vec::new(), seen: HashSet::new(), lock_epoch: 0 }
     }
 
+    pub fn call_list_cleared(&mut self) { self.seen.clear(); }
+
     pub fn ring(&mut self, id: &str, label: &str) -> Vec<Effect> {
         if self.ringing.is_some() || !self.seen.insert(id.into()) {
             return vec![];
