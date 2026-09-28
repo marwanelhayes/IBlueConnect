@@ -530,7 +530,8 @@ fn public_snapshot(ready: bool, observed: &Observation, calls: &[OfonoCall], con
             };
             (call.id.clone(), phase, audio)
         }
-        _ => (String::new(), "idle", "unknown"),
+        Observation::Idle => (String::new(), "idle", "unknown"),
+        Observation::Unavailable => (String::new(), "unavailable", "unknown"),
     };
     (status.into(), id, phase.into(), audio.into(), caller_label(observed, calls, contacts))
 }
@@ -820,6 +821,8 @@ mod tests {
     fn unavailable_backend_and_unsupported_calls_are_distinct() {
         assert_eq!(public_snapshot(false, &Observation::Unavailable, &[], &[]).0, "calling unavailable");
         assert_eq!(public_snapshot(true, &Observation::Unavailable, &[], &[]).0, "manage calls on phone");
+        assert_eq!(public_snapshot(true, &Observation::Unavailable, &[], &[]).2, "unavailable");
+        assert_eq!(public_snapshot(true, &Observation::Idle, &[], &[]).2, "idle");
     }
 
     #[test]

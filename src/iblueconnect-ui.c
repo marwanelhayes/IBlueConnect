@@ -10,6 +10,7 @@ static const char *status_text(const char *value)
 static const char *phase_text(const char *value)
 {
     if (g_strcmp0(value, "idle") == 0) return "No current call";
+    if (g_strcmp0(value, "unavailable") == 0) return "Call details unavailable";
     if (g_strcmp0(value, "incoming") == 0) return "Incoming call";
     if (g_strcmp0(value, "dialing") == 0) return "Dialing";
     if (g_strcmp0(value, "alerting") == 0) return "Ringing";
@@ -267,7 +268,7 @@ static void show_state(View *self, const char *status, const char *id, const cha
 
 static void show_unavailable(View *self)
 {
-    show_state(self, "calling unavailable", "", "idle", "unknown", "");
+    show_state(self, "calling unavailable", "", "unavailable", "unknown", "");
     set_text(self->battery, "iPhone battery unavailable");
 }
 
@@ -1169,6 +1170,7 @@ int main(void)
     g_assert_cmpstr(status_text("calling unavailable"), ==, "Calling unavailable");
     g_assert_cmpstr(status_text("/private/path"), ==, "Calling unavailable");
     g_assert_cmpstr(phase_text("active"), ==, "Active call");
+    g_assert_cmpstr(phase_text("unavailable"), ==, "Call details unavailable");
     g_assert_cmpstr(phase_text("/private/path"), ==, "No call details");
     g_assert_cmpstr(audio_text("laptop"), ==, "Laptop");
     g_assert_cmpstr(audio_text("/private/path"), ==, "Unknown");
@@ -1182,6 +1184,7 @@ int main(void)
     g_assert_cmpuint(actions_for("ready", "incoming", TRUE), ==, 0);
     g_assert_cmpuint(actions_for("calling unavailable", "idle", FALSE), ==, 0);
     g_assert_cmpuint(actions_for("manage calls on phone", "incoming", FALSE), ==, 0);
+    g_assert_cmpuint(actions_for("manage calls on phone", "unavailable", FALSE), ==, 0);
 
     g_assert_true(dial_input_ok("+20 100 123"));
     g_assert_true(dial_input_ok("*#06#1"));
