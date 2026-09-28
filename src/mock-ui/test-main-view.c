@@ -437,6 +437,44 @@ static void keyboard_shortcuts(void)
     g_object_unref(app);
 }
 
+static GtkWidget *find_type(GtkWidget *root, GType type)
+{
+    if (G_TYPE_CHECK_INSTANCE_TYPE(root, type)) return root;
+    for (GtkWidget *child = gtk_widget_get_first_child(root); child;
+         child = gtk_widget_get_next_sibling(child)) {
+        GtkWidget *found = find_type(child, type);
+        if (found) return found;
+    }
+    return NULL;
+}
+
+static void comfortable_proportions(void)
+{
+    MockUiModel model;
+    mock_ui_init(&model);
+    GtkApplication *app = gtk_application_new("org.iblueconnect.MockSizesTest", 0);
+    g_application_register(G_APPLICATION(app), NULL, NULL);
+    GtkWidget *window = mock_main_window_new(app, &model, NULL, NULL);
+    gtk_window_present(GTK_WINDOW(window));
+    for (int i = 0; i < 20; i++) while (g_main_context_iteration(NULL, FALSE));
+    g_assert_null(find_button(window, "2 ABC"));
+    g_assert_nonnull(find_button(window, "2"));
+    GtkWidget *search = find_search(window, "Search contacts or enter a number");
+    g_assert_cmpint(gtk_widget_get_height(search), >=, 44);
+    GtkWidget *card = gtk_widget_get_parent(find_label(window, "iPhone connected · Calls ready"));
+    graphene_rect_t card_box;
+    g_assert_true(gtk_widget_compute_bounds(card, window, &card_box));
+    g_assert_cmpfloat(card_box.size.height, >=, 110);
+    GtkWidget *bar = find_type(window, ADW_TYPE_VIEW_SWITCHER_BAR);
+    GtkWidget *icon = find_type(bar, GTK_TYPE_IMAGE);
+    g_assert_nonnull(icon);
+    int icon_min = 0;
+    gtk_widget_measure(icon, GTK_ORIENTATION_VERTICAL, -1, &icon_min, NULL, NULL, NULL);
+    g_assert_cmpint(icon_min, >=, 24);
+    gtk_window_destroy(GTK_WINDOW(window));
+    g_object_unref(app);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -451,5 +489,6 @@ int main(int argc, char **argv)
     g_test_add_func("/main/device-popover", device_popover);
     g_test_add_func("/main/preferences", preferences);
     g_test_add_func("/main/keyboard-shortcuts", keyboard_shortcuts);
+    g_test_add_func("/main/proportions", comfortable_proportions);
     return g_test_run();
 }

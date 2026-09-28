@@ -168,6 +168,7 @@ static void outgoing_controls(gconstpointer ignored)
     g_assert_true(gtk_widget_get_visible(find(GTK_WIDGET(window), "audio-choices")));
     click(&f, "keypad-toggle");
     g_assert_true(gtk_widget_get_visible(find(GTK_WIDGET(window), "in-call-keypad")));
+    g_assert_cmpstr(gtk_button_get_label(GTK_BUTTON(find(GTK_WIDGET(window), "tone-2"))), ==, "2");
     click(&f, "tone-1");
     g_assert_cmpstr(f.last_action, ==, "tone");
     g_assert_cmpstr(f.last_argument, ==, "1");

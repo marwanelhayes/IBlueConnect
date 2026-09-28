@@ -109,8 +109,7 @@ static gboolean on_key(GtkEventControllerKey *controller, guint keyval, guint ke
 
 static GtkWidget *make_keypad(MockCallPopup *popup)
 {
-    static const char *keys[] = {"1", "2 ABC", "3 DEF", "4 GHI", "5 JKL", "6 MNO",
-                                  "7 PQRS", "8 TUV", "9 WXYZ", "*", "0", "#"};
+    static const char *keys[] = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"};
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     GtkWidget *grid = gtk_grid_new();
     gtk_grid_set_row_spacing(GTK_GRID(grid), 4);

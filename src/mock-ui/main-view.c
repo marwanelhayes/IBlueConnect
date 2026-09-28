@@ -418,11 +418,10 @@ static GtkWidget *build_dial(MainView *self)
     gtk_grid_set_row_spacing(GTK_GRID(grid), 4);
     gtk_grid_set_column_spacing(GTK_GRID(grid), 4);
     gtk_widget_set_vexpand(grid, TRUE);
-    static const char *keys[] = { "1", "2 ABC", "3 DEF", "4 GHI", "5 JKL", "6 MNO",
-                                  "7 PQRS", "8 TUV", "9 WXYZ", "*", "0", "#" };
     static const char *digits[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#" };
     for (int i = 0; i < 12; i++) {
-        GtkWidget *key = gtk_button_new_with_label(keys[i]);
+        GtkWidget *key = gtk_button_new_with_label(digits[i]);
+        gtk_widget_add_css_class(key, "title-3");
         gtk_widget_set_hexpand(key, TRUE);
         gtk_widget_set_vexpand(key, TRUE);
         gtk_widget_set_size_request(key, 72, 42);
@@ -458,6 +457,7 @@ static GtkWidget *build_contacts(MainView *self)
     pad(sidebar, 12);
     self->contact_search = gtk_search_entry_new();
     gtk_search_entry_set_placeholder_text(GTK_SEARCH_ENTRY(self->contact_search), "Search contacts");
+    gtk_widget_add_css_class(self->contact_search, "comfy-search");
     gtk_box_append(GTK_BOX(sidebar), self->contact_search);
     GtkWidget *scroll = gtk_scrolled_window_new();
     gtk_widget_set_vexpand(scroll, TRUE);
@@ -493,6 +493,7 @@ static GtkWidget *build_recents(MainView *self)
     GtkWidget *page = vbox(8);
     pad(page, 16);
     self->home_search = gtk_search_entry_new();
+    gtk_widget_add_css_class(self->home_search, "comfy-search");
     gtk_search_entry_set_placeholder_text(GTK_SEARCH_ENTRY(self->home_search),
                                           "Search contacts or enter a number");
     gtk_box_append(GTK_BOX(page), self->home_search);
@@ -533,15 +534,21 @@ static GtkWidget *build_connected(MainView *self)
     gtk_widget_set_margin_end(clamp, 16);
     gtk_widget_set_margin_top(clamp, 8);
     gtk_widget_set_margin_bottom(clamp, 4);
-    self->connection_card = vbox(6);
-    pad(self->connection_card, 12);
+    self->connection_card = vbox(10);
     gtk_widget_add_css_class(self->connection_card, "card");
-    GtkWidget *devices = hbox(12);
+    gtk_widget_add_css_class(self->connection_card, "connection-card");
+    GtkWidget *devices = hbox(16);
     gtk_widget_set_halign(devices, GTK_ALIGN_CENTER);
-    gtk_box_append(GTK_BOX(devices), gtk_image_new_from_icon_name("phone-symbolic"));
+    GtkWidget *phone = gtk_image_new_from_icon_name("phone-symbolic");
+    gtk_image_set_pixel_size(GTK_IMAGE(phone), 48);
+    gtk_box_append(GTK_BOX(devices), phone);
     self->link_status = text_label("━━━━━━", "accent");
+    gtk_widget_add_css_class(self->link_status, "title-2");
+    gtk_widget_set_valign(self->link_status, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(devices), self->link_status);
-    gtk_box_append(GTK_BOX(devices), gtk_image_new_from_icon_name("computer-symbolic"));
+    GtkWidget *laptop = gtk_image_new_from_icon_name("computer-symbolic");
+    gtk_image_set_pixel_size(GTK_IMAGE(laptop), 48);
+    gtk_box_append(GTK_BOX(devices), laptop);
     gtk_box_append(GTK_BOX(self->connection_card), devices);
     GtkWidget *caption = text_label("iPhone connected · Calls ready", "dim-label");
     gtk_label_set_xalign(GTK_LABEL(caption), 0.5);
@@ -684,6 +691,16 @@ static gboolean close_page(GtkWidget *widget, GVariant *args, gpointer user_data
 GtkWidget *mock_main_window_new(GtkApplication *app, MockUiModel *model,
                                 MockMainCallback callback, gpointer user_data)
 {
+    static GtkCssProvider *css;
+    if (!css) {
+        css = gtk_css_provider_new();
+        gtk_css_provider_load_from_string(css,
+            "viewswitcherbar image { -gtk-icon-size: 24px; }"
+            ".comfy-search { min-height: 44px; font-size: 1.1em; }"
+            ".connection-card { padding: 20px; }");
+        gtk_style_context_add_provider_for_display(gdk_display_get_default(),
+            GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    }
     MainView *self = g_new0(MainView, 1);
     self->model = model;
     self->callback = callback;
