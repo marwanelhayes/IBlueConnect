@@ -13,20 +13,46 @@ static bool same_digits(const char *left, const char *right)
     }
 }
 
-const MockContact mock_contacts[] = {
-    { "Ahmed Mohamed", "010 1234 5678", "02 1234 5678" },
-    { "Mohamed Ali", "012 3456 7890", NULL },
-    { "Sara Ahmed", "011 9876 5432", NULL },
-    { "Dad", "010 5555 1234", NULL },
+static const MockContact builtin_contacts[] = {
+    { "Ahmed Mohamed", { "010 1234 5678", "02 1234 5678" }, { "Mobile", "Work" } },
+    { "Mohamed Ali", { "012 3456 7890" }, { "Mobile" } },
+    { "Sara Ahmed", { "011 9876 5432" }, { "Mobile" } },
+    { "Dad", { "010 5555 1234" }, { "Mobile" } },
 };
-const size_t mock_contacts_count = sizeof mock_contacts / sizeof mock_contacts[0];
 
-const MockRecent mock_recents[] = {
-    { 0, "Incoming", "17:42", "12 min" },
-    { 3, "Missed", "16:21", NULL },
-    { 1, "Outgoing", "14:03", "4 min" },
+static const MockRecent builtin_recents[] = {
+    { "Ahmed Mohamed", "010 1234 5678", "Incoming", "17:42", "12 min" },
+    { "Dad", "010 5555 1234", "Missed", "16:21", NULL },
+    { "Mohamed Ali", "012 3456 7890", "Outgoing", "14:03", "4 min" },
 };
-const size_t mock_recents_count = sizeof mock_recents / sizeof mock_recents[0];
+
+static const size_t builtin_favorites[] = { 0, 3, 1, 2 };
+
+const MockContact *mock_contacts = builtin_contacts;
+size_t mock_contacts_count = sizeof builtin_contacts / sizeof builtin_contacts[0];
+const MockRecent *mock_recents = builtin_recents;
+size_t mock_recents_count = sizeof builtin_recents / sizeof builtin_recents[0];
+const size_t *mock_favorites = builtin_favorites;
+size_t mock_favorites_count = sizeof builtin_favorites / sizeof builtin_favorites[0];
+
+void mock_ui_set_data(const MockContact *contacts, size_t contacts_count,
+                      const MockRecent *recents, size_t recents_count,
+                      const size_t *favorites, size_t favorites_count)
+{
+    mock_contacts = contacts;
+    mock_contacts_count = contacts_count;
+    mock_recents = recents;
+    mock_recents_count = recents_count;
+    mock_favorites = favorites;
+    mock_favorites_count = favorites_count;
+}
+
+int mock_ui_contact_named(const char *name)
+{
+    for (size_t i = 0; name && i < mock_contacts_count; i++)
+        if (strcmp(mock_contacts[i].name, name) == 0) return (int)i;
+    return -1;
+}
 
 const MockAudioDevice mock_audio_devices[] = {
     { "Sony WH-1000XM5", "Bluetooth Headset" },
@@ -42,6 +68,8 @@ void mock_ui_init(MockUiModel *model)
         .call = MOCK_CALL_IDLE,
         .caller_index = -1,
     };
+    memcpy(model->battery, "Battery · 72%", sizeof "Battery · 72%");
+    memcpy(model->sync_label, "Last contact sync · 2 minutes ago", sizeof "Last contact sync · 2 minutes ago");
 }
 
 void mock_ui_set_connection(MockUiModel *model, MockConnection connection)
@@ -106,11 +134,11 @@ void mock_ui_dial_number(MockUiModel *model, const char *number)
     mock_ui_outgoing(model, -1);
     memcpy(model->dialed_number, number, strlen(number) + 1);
     for (size_t i = 0; i < mock_contacts_count; i++) {
-        if (same_digits(number, mock_contacts[i].mobile) ||
-            (mock_contacts[i].work && same_digits(number, mock_contacts[i].work))) {
-            model->caller_index = (int)i;
-            break;
-        }
+        for (size_t n = 0; n < MOCK_CONTACT_NUMBERS && mock_contacts[i].numbers[n]; n++)
+            if (same_digits(number, mock_contacts[i].numbers[n])) {
+                model->caller_index = (int)i;
+                return;
+            }
     }
 }
 
@@ -122,6 +150,8 @@ void mock_ui_connect_call(MockUiModel *model)
 
 void mock_ui_tick(MockUiModel *model)
 {
+    if (model->live && (model->call == MOCK_CALL_OUTGOING || model->call == MOCK_CALL_CONNECTING))
+        return; /* The phone reports when the call connects. */
     if (model->call == MOCK_CALL_OUTGOING)
         model->call = MOCK_CALL_CONNECTING;
     else if (model->call == MOCK_CALL_CONNECTING)
@@ -152,6 +182,7 @@ void mock_ui_finish_call(MockUiModel *model)
     model->caller_index = -1;
     model->dialed_number[0] = '\0';
     model->elapsed_seconds = 0;
+    model->call_id[0] = '\0';
 }
 
 void mock_ui_toggle_mute(MockUiModel *model)

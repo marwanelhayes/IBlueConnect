@@ -389,6 +389,8 @@ void mock_call_popup_update(MockCallPopup *popup, const MockUiModel *model)
     gtk_widget_set_visible(popup->incoming, incoming);
     gtk_widget_set_visible(popup->outgoing, outgoing);
     gtk_widget_set_visible(popup->active, active);
+    gtk_widget_set_visible(popup->mute_button, !model->live); /* No mute or audio routing backend yet. */
+    gtk_widget_set_visible(popup->audio_button, !model->live);
     gtk_widget_set_visible(popup->terminal, terminal);
     gtk_widget_set_visible(popup->details, active && !model->compact);
     gtk_widget_set_visible(popup->compact_button, active && !model->compact);
@@ -408,7 +410,7 @@ void mock_call_popup_update(MockCallPopup *popup, const MockUiModel *model)
                                  ? &mock_contacts[model->caller_index] : NULL;
     gtk_label_set_text(GTK_LABEL(popup->identity), contact ? contact->name :
                        model->dialed_number[0] ? model->dialed_number : "Unknown caller");
-    gtk_label_set_text(GTK_LABEL(popup->number), contact ? contact->mobile :
+    gtk_label_set_text(GTK_LABEL(popup->number), contact ? contact->numbers[0] :
                        incoming ? "Unknown caller" : "");
     gtk_label_set_text(GTK_LABEL(popup->subtitle), incoming ? "Incoming call · via iPhone" :
                        outgoing ? "Calling… via iPhone" : "via iPhone");

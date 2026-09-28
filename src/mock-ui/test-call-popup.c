@@ -175,6 +175,24 @@ static void outgoing_controls(gconstpointer ignored)
     gtk_window_destroy(window);
 }
 
+static void live_mode_hides_mock_controls(gconstpointer ignored)
+{
+    (void)ignored;
+    Fixture f = {0};
+    mock_ui_init(&f.model);
+    f.model.live = true;
+    f.popup = mock_call_popup_new(app, action, &f);
+    mock_ui_incoming(&f.model, 0);
+    mock_ui_answer(&f.model);
+    mock_call_popup_update(f.popup, &f.model);
+    GtkWindow *window = mock_call_popup_window(f.popup);
+    g_assert_true(gtk_widget_get_visible(find(GTK_WIDGET(window), "active-actions")));
+    g_assert_false(gtk_widget_get_visible(find(GTK_WIDGET(window), "mute")));
+    g_assert_false(gtk_widget_get_visible(find(GTK_WIDGET(window), "audio-selector")));
+    g_assert_true(gtk_widget_get_visible(find(GTK_WIDGET(window), "keypad-toggle")));
+    gtk_window_destroy(window);
+}
+
 int main(int argc, char **argv)
 {
     gtk_test_init(&argc, &argv);
@@ -183,6 +201,7 @@ int main(int argc, char **argv)
     g_test_add_data_func("/popup/incoming-to-active", NULL, incoming_flow);
     g_test_add_data_func("/popup/ignore-decline", NULL, ignore_and_decline);
     g_test_add_data_func("/popup/outgoing-controls", NULL, outgoing_controls);
+    g_test_add_data_func("/popup/live-mode", NULL, live_mode_hides_mock_controls);
     int result = g_test_run();
     g_object_unref(app);
     return result;

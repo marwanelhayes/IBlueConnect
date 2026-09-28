@@ -485,6 +485,52 @@ static void comfortable_proportions(void)
     g_object_unref(app);
 }
 
+static void live_mode_hides_mock_controls(void)
+{
+    MockUiModel model;
+    mock_ui_init(&model);
+    model.live = true;
+    Event event = {0};
+    GtkApplication *app = gtk_application_new("org.iblueconnect.MockLiveTest", 0);
+    g_application_register(G_APPLICATION(app), NULL, NULL);
+    GtkWidget *window = mock_main_window_new(app, &model, on_action, &event);
+    g_assert_false(gtk_widget_get_visible(find_button(window, "Disconnect")));
+    g_assert_false(gtk_widget_get_visible(find_tooltip(window, "Preferences")));
+    model.contact_sync_error = true;
+    g_strlcpy(model.sync_label, "Contact sync failed — allow Sync Contacts", sizeof model.sync_label);
+    mock_main_window_update(window);
+    g_assert_nonnull(find_label(window, "Contact sync failed — allow Sync Contacts"));
+    model.connection = MOCK_CONNECTION_DISCONNECTED;
+    mock_main_window_update(window);
+    g_assert_null(find_button(window, "Find iPhone"));
+    GtkWidget *settings = find_button(window, "Open Bluetooth Settings");
+    g_assert_nonnull(settings);
+    g_signal_emit_by_name(settings, "clicked");
+    g_assert_cmpint(event.action, ==, MOCK_MAIN_CONNECT);
+    gtk_window_destroy(GTK_WINDOW(window));
+    g_free(event.value);
+    g_object_unref(app);
+}
+
+static void non_ascii_names_get_letter_sections(void)
+{
+    static const MockContact contacts[] = { { "émile zola", { "111" }, { "Mobile" } } };
+    const MockContact *saved = mock_contacts;
+    size_t saved_count = mock_contacts_count;
+    mock_contacts = contacts;
+    mock_contacts_count = 1;
+    MockUiModel model;
+    mock_ui_init(&model);
+    GtkApplication *app = gtk_application_new("org.iblueconnect.MockUtf8Test", 0);
+    g_application_register(G_APPLICATION(app), NULL, NULL);
+    GtkWidget *window = mock_main_window_new(app, &model, NULL, NULL);
+    g_assert_nonnull(find_label(window, "É"));
+    gtk_window_destroy(GTK_WINDOW(window));
+    g_object_unref(app);
+    mock_contacts = saved;
+    mock_contacts_count = saved_count;
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -500,5 +546,7 @@ int main(int argc, char **argv)
     g_test_add_func("/main/preferences", preferences);
     g_test_add_func("/main/keyboard-shortcuts", keyboard_shortcuts);
     g_test_add_func("/main/proportions", comfortable_proportions);
+    g_test_add_func("/main/live-mode", live_mode_hides_mock_controls);
+    g_test_add_func("/main/utf8-sections", non_ascii_names_get_letter_sections);
     return g_test_run();
 }

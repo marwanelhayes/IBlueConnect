@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "call-popup.h"
+#include "live.h"
 #include "main-view.h"
 #include "mock-state.h"
 
@@ -15,19 +16,204 @@ typedef struct {
     bool developer_mode;
     bool activated;
     const char *preview;
+    bool background; /* Started by the daemon for a call: no main window on first activation. */
+    bool snapshot_seen;
+    GDBusProxy *daemon;
+    LiveData *data;
+    GVariant *pending_contacts;
 } MockApp;
+
+/* A live app started for a call exits once the call is gone and no window needs it. */
+static void quit_when_unused(MockApp *app)
+{
+    if (app->model.live && app->snapshot_seen && !app->main_window && !app->developer_window &&
+        !app->model.popup_visible && app->model.call == MOCK_CALL_IDLE)
+        g_application_quit(G_APPLICATION(app->application));
+}
+
+static void refresh_popup(MockApp *app)
+{
+    if (app->popup)
+        mock_call_popup_update(app->popup, &app->model);
+    quit_when_unused(app);
+}
 
 static void refresh(MockApp *app)
 {
     if (app->main_window)
         mock_main_window_update(app->main_window);
-    if (app->popup)
-        mock_call_popup_update(app->popup, &app->model);
+    refresh_popup(app);
+}
+
+static void call_daemon(MockApp *app, const char *method, GVariant *args,
+                        GAsyncReadyCallback done)
+{
+    if (!app->daemon) {
+        if (args) g_variant_unref(g_variant_ref_sink(args));
+        return;
+    }
+    g_dbus_proxy_call(app->daemon, method, args, G_DBUS_CALL_FLAGS_NO_AUTO_START, 10000,
+                      NULL, done, app);
+}
+
+static GVariant *reply(GObject *source, GAsyncResult *result)
+{
+    GError *error = NULL;
+    GVariant *value = g_dbus_proxy_call_finish(G_DBUS_PROXY(source), result, &error);
+    if (error) {
+        g_printerr("IBlueConnect daemon request failed\n"); /* No caller details in logs. */
+        g_error_free(error);
+    }
+    return value;
+}
+
+static void on_ignored_reply(GObject *source, GAsyncResult *result, gpointer data)
+{
+    GVariant *value = reply(source, result);
+    if (value) g_variant_unref(value);
+    (void)data;
+}
+
+static void on_answer(GObject *source, GAsyncResult *result, gpointer data)
+{
+    MockApp *app = data;
+    GVariant *value = reply(source, result);
+    if (value) g_variant_unref(value);
+    else if (app->model.call == MOCK_CALL_ACTIVE) {
+        app->model.call = MOCK_CALL_INCOMING; /* Let the user retry or answer on the phone. */
+        refresh_popup(app);
+    }
+}
+
+static void on_snapshot(GObject *source, GAsyncResult *result, gpointer data)
+{
+    MockApp *app = data;
+    GVariant *value = reply(source, result);
+    if (value) {
+        const char *status, *id, *phase, *audio, *caller;
+        g_variant_get(value, "(&s&s&s&s&s)", &status, &id, &phase, &audio, &caller);
+        live_apply_snapshot(&app->model, status, id, phase, caller);
+        g_variant_unref(value);
+    } else {
+        live_apply_snapshot(&app->model, NULL, "", "idle", "");
+    }
+    app->snapshot_seen = true;
+    refresh(app);
+}
+
+static void on_battery(GObject *source, GAsyncResult *result, gpointer data)
+{
+    MockApp *app = data;
+    GVariant *value = reply(source, result);
+    const char *status = NULL;
+    if (value) g_variant_get(value, "(&s)", &status);
+    live_apply_battery(&app->model, status);
+    if (value) g_variant_unref(value);
+    if (app->main_window) mock_main_window_update(app->main_window);
+}
+
+static void on_recents(GObject *source, GAsyncResult *result, gpointer data)
+{
+    MockApp *app = data;
+    GVariant *value = reply(source, result);
+    GVariant *contacts = app->pending_contacts;
+    app->pending_contacts = NULL;
+    if (value && contacts) {
+        GVariant *contact_rows = g_variant_get_child_value(contacts, 1);
+        GVariant *recent_rows = g_variant_get_child_value(value, 1);
+        LiveData *old = app->data;
+        app->data = live_load(contact_rows, recent_rows, g_get_real_time() / G_USEC_PER_SEC);
+        app->model.caller_index = mock_ui_contact_named(app->model.dialed_number);
+        refresh(app);
+        live_free(old); /* Widgets copied what they show; the old set is unused now. */
+        g_variant_unref(contact_rows);
+        g_variant_unref(recent_rows);
+    }
+    if (value) g_variant_unref(value);
+    if (contacts) g_variant_unref(contacts);
+}
+
+static void on_contacts(GObject *source, GAsyncResult *result, gpointer data)
+{
+    MockApp *app = data;
+    GVariant *value = reply(source, result);
+    if (!value) return;
+    const char *status;
+    g_variant_get_child(value, 0, "&s", &status);
+    live_apply_contacts_status(&app->model, status);
+    if (app->pending_contacts) g_variant_unref(app->pending_contacts);
+    app->pending_contacts = value;
+    call_daemon(app, "Recents", NULL, on_recents);
+}
+
+static void load_snapshot(MockApp *app)
+{
+    call_daemon(app, "Snapshot", NULL, on_snapshot);
+    call_daemon(app, "BatteryStatus", NULL, on_battery);
+}
+
+static void load_lists(MockApp *app)
+{
+    call_daemon(app, "Contacts", NULL, on_contacts);
+}
+
+static void on_daemon_signal(GDBusProxy *proxy, const char *sender, const char *signal,
+                             GVariant *parameters, gpointer data)
+{
+    (void)proxy;
+    (void)sender;
+    (void)parameters;
+    if (g_strcmp0(signal, "Changed") == 0) load_snapshot(data);
+    else if (g_strcmp0(signal, "ContactsChanged") == 0 || g_strcmp0(signal, "RecentsChanged") == 0)
+        load_lists(data);
+}
+
+static void on_owner(GObject *proxy, GParamSpec *spec, gpointer data)
+{
+    (void)spec;
+    MockApp *app = data;
+    char *owner = g_dbus_proxy_get_name_owner(G_DBUS_PROXY(proxy));
+    if (owner) {
+        load_snapshot(app);
+        load_lists(app);
+    } else {
+        live_apply_snapshot(&app->model, NULL, "", "idle", "");
+        app->snapshot_seen = true;
+        refresh(app);
+    }
+    g_free(owner);
+}
+
+static void on_proxy(GObject *source, GAsyncResult *result, gpointer data)
+{
+    (void)source;
+    MockApp *app = data;
+    app->daemon = g_dbus_proxy_new_for_bus_finish(result, NULL);
+    if (!app->daemon) {
+        live_apply_snapshot(&app->model, NULL, "", "idle", "");
+        app->snapshot_seen = true;
+        refresh(app);
+        return;
+    }
+    g_signal_connect(app->daemon, "g-signal", G_CALLBACK(on_daemon_signal), app);
+    g_signal_connect(app->daemon, "notify::g-name-owner", G_CALLBACK(on_owner), app);
+    on_owner(G_OBJECT(app->daemon), NULL, app);
 }
 
 static void popup_action(const char *action, const char *argument, gpointer data)
 {
     MockApp *app = data;
+    if (app->model.live && *app->model.call_id) {
+        const char *id = app->model.call_id;
+        if (strcmp(action, "answer") == 0 && app->model.call == MOCK_CALL_INCOMING)
+            call_daemon(app, "Answer", g_variant_new("(s)", id), on_answer);
+        else if (strcmp(action, "decline") == 0 && app->model.call == MOCK_CALL_INCOMING)
+            call_daemon(app, "Decline", g_variant_new("(s)", id), on_ignored_reply);
+        else if (strcmp(action, "end") == 0)
+            call_daemon(app, "HangUp", g_variant_new("(s)", id), on_ignored_reply);
+        else if (strcmp(action, "tone") == 0 && argument && app->model.call == MOCK_CALL_ACTIVE)
+            call_daemon(app, "SendTone", g_variant_new("(ss)", id, argument), on_ignored_reply);
+    }
     if (strcmp(action, "ignore") == 0)
         mock_ui_ignore(&app->model);
     else if (strcmp(action, "decline") == 0)
@@ -45,13 +231,32 @@ static void popup_action(const char *action, const char *argument, gpointer data
     else if (strcmp(action, "dismiss") == 0)
         app->model.popup_visible = false;
     /* Keypad tones are visual mock interactions until a call backend exists. */
-    refresh(app);
+    refresh_popup(app);
 }
 
 static void main_action(MockMainAction action, int contact_index,
                         const char *value, gpointer data)
 {
     MockApp *app = data;
+    if (app->model.live) {
+        if (action == MOCK_MAIN_CALL && !value && contact_index >= 0 &&
+            (size_t)contact_index < mock_contacts_count)
+            value = mock_contacts[contact_index].numbers[0];
+        if (action == MOCK_MAIN_CALL && value)
+            call_daemon(app, "Dial", g_variant_new("(s)", value), on_ignored_reply);
+        else if (action == MOCK_MAIN_SYNC)
+            call_daemon(app, "SyncContacts", NULL, on_ignored_reply);
+        else if (action == MOCK_MAIN_RETRY)
+            load_snapshot(app);
+        else if (action == MOCK_MAIN_CONNECT) {
+            GError *error = NULL;
+            if (!g_spawn_command_line_async("gnome-control-center bluetooth", &error)) {
+                g_printerr("Bluetooth settings could not open\n");
+                g_error_free(error);
+            }
+        }
+        return;
+    }
     switch (action) {
     case MOCK_MAIN_CALL:
         if (contact_index < 0 && value)
@@ -78,7 +283,8 @@ static gboolean tick(gpointer data)
 {
     MockApp *app = data;
     mock_ui_tick(&app->model);
-    refresh(app);
+    if (app->model.live) refresh_popup(app); /* Timers and banners only; lists change on signals. */
+    else refresh(app);
     return G_SOURCE_CONTINUE;
 }
 
@@ -87,6 +293,7 @@ static void clear_main(GtkWidget *widget, gpointer data)
     MockApp *app = data;
     if (app->main_window == widget)
         app->main_window = NULL;
+    quit_when_unused(app);
 }
 
 static void clear_developer(GtkWidget *widget, gpointer data)
@@ -207,9 +414,18 @@ static void activate(GApplication *application, gpointer data)
     MockApp *app = data;
     if (!app->activated) {
         app->activated = true;
-        g_application_hold(application);
+        if (!app->model.live) g_application_hold(application);
         app->popup = mock_call_popup_new(GTK_APPLICATION(application), popup_action, app);
         g_timeout_add_seconds(1, tick, app);
+        if (app->model.live)
+            g_dbus_proxy_new_for_bus(G_BUS_TYPE_SESSION, G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START, NULL,
+                "org.iblueconnect.Daemon", "/org/iblueconnect/Daemon", "org.iblueconnect.Daemon",
+                NULL, on_proxy, app);
+        if (app->background) return;
+    }
+    if (app->model.live && app->model.call == MOCK_CALL_ACTIVE && !app->model.popup_visible) {
+        app->model.popup_visible = true; /* Opening the app brings back a dismissed call controller. */
+        refresh_popup(app);
     }
     if (app->preview) {
         if (strcmp(app->preview, "incoming") == 0)
@@ -280,23 +496,47 @@ int main(int argc, char **argv)
     if (argc == 2 && strcmp(argv[1], "--self-test") == 0)
         return self_test();
     MockApp app = {0};
+    bool mock = false;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--developer") == 0)
-            app.developer_mode = true;
+            app.developer_mode = mock = true;
+        else if (strcmp(argv[i], "--mock") == 0)
+            mock = true;
+        else if (strcmp(argv[i], "--background") == 0)
+            app.background = true;
         else if (strncmp(argv[i], "--preview=", 10) == 0 &&
                  (strcmp(argv[i] + 10, "incoming") == 0 ||
                   strcmp(argv[i] + 10, "active") == 0 ||
                   strcmp(argv[i] + 10, "compact") == 0 ||
-                  strcmp(argv[i] + 10, "outgoing") == 0))
+                  strcmp(argv[i] + 10, "outgoing") == 0)) {
             app.preview = argv[i] + 10;
-        else {
-            g_printerr("Usage: iblueconnect-mock [--developer|--self-test|--preview=incoming|active|compact|outgoing]\n");
+            mock = true;
+        } else {
+            g_printerr("Usage: iblueconnect [--background|--mock|--developer|--self-test|"
+                       "--preview=incoming|active|compact|outgoing]\n");
             return 2;
         }
     }
     mock_ui_init(&app.model);
+    app.model.live = !mock;
+    if (app.model.live) {
+        app.model.battery[0] = '\0';
+        app.model.sync_label[0] = '\0';
+        mock_ui_set_data(NULL, 0, NULL, 0, NULL, 0);
+        app.model.connection = MOCK_CONNECTION_CONNECTING;
+    }
     adw_init();
-    app.application = gtk_application_new("org.iblueconnect.Mock", G_APPLICATION_DEFAULT_FLAGS);
+    app.application = gtk_application_new(app.model.live ? "org.iblueconnect.IBlueConnect"
+                                                         : "org.iblueconnect.Mock",
+                                          G_APPLICATION_DEFAULT_FLAGS);
+    if (app.background) {
+        /* The daemon asks for the call controller; a running instance already follows the call. */
+        if (!g_application_register(G_APPLICATION(app.application), NULL, NULL) ||
+            g_application_get_is_remote(G_APPLICATION(app.application))) {
+            g_object_unref(app.application);
+            return 0;
+        }
+    }
     GSimpleAction *quit = g_simple_action_new("quit", NULL);
     g_signal_connect(quit, "activate", G_CALLBACK(quit_action), app.application);
     g_action_map_add_action(G_ACTION_MAP(app.application), G_ACTION(quit));
@@ -305,6 +545,8 @@ int main(int argc, char **argv)
     gtk_application_set_accels_for_action(app.application, "app.quit", quit_accels);
     g_signal_connect(app.application, "activate", G_CALLBACK(activate), &app);
     int status = g_application_run(G_APPLICATION(app.application), 1, argv);
+    live_free(app.data);
+    g_clear_object(&app.daemon);
     g_object_unref(app.application);
     return status;
 }

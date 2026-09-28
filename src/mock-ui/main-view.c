@@ -6,7 +6,7 @@ typedef struct {
     MockMainCallback callback;
     gpointer user_data;
     GtkWidget *window, *screen, *pages, *device, *device_status;
-    GtkWidget *device_calls, *device_contacts, *device_audio;
+    GtkWidget *device_calls, *device_contacts, *device_audio, *device_battery, *device_sync;
     GtkWidget *recents_box, *contacts_box, *detail, *contact_search;
     GtkWidget *home_search, *dial_entry, *dial_match, *dial_button;
     GtkWidget *split, *sync_error, *calls_error, *connection_card, *link_status;
@@ -91,12 +91,14 @@ static void call_contact(GtkButton *button, gpointer user_data)
 {
     MainView *self = user_data;
     int index = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "contact-index")) - 1;
-    emit(self, MOCK_MAIN_CALL, index, NULL);
+    emit(self, MOCK_MAIN_CALL, index, g_object_get_data(G_OBJECT(button), "number"));
 }
 
-static GtkWidget *call_button(MainView *self, int index, const char *label)
+/* Calls number; index is the matching contact or -1. */
+static GtkWidget *call_button(MainView *self, int index, const char *number, const char *label)
 {
     GtkWidget *button = gtk_button_new_with_label(label);
+    g_object_set_data_full(G_OBJECT(button), "number", g_strdup(number), g_free);
     gtk_widget_set_tooltip_text(button, label);
     gtk_widget_set_sensitive(button, can_call(self));
     gtk_accessible_update_property(GTK_ACCESSIBLE(button), GTK_ACCESSIBLE_PROPERTY_LABEL, label, -1);
@@ -135,8 +137,10 @@ static gboolean number_contains(const char *number, const char *query)
 
 static gboolean contact_matches(const MockContact *contact, const char *query)
 {
-    return contains(contact->name, query) || number_contains(contact->mobile, query) ||
-           number_contains(contact->work, query);
+    if (contains(contact->name, query)) return TRUE;
+    for (size_t n = 0; n < MOCK_CONTACT_NUMBERS && contact->numbers[n]; n++)
+        if (number_contains(contact->numbers[n], query)) return TRUE;
+    return FALSE;
 }
 
 static gint contact_index_cmp(gconstpointer a, gconstpointer b)
@@ -145,19 +149,21 @@ static gint contact_index_cmp(gconstpointer a, gconstpointer b)
     return g_utf8_collate(mock_contacts[left].name, mock_contacts[right].name);
 }
 
-static GtkWidget *person_row(MainView *self, size_t index, const char *subtitle, gboolean clickable)
+/* A NULL number means the row has no Call button. */
+static GtkWidget *person_row(MainView *self, const char *name, const char *subtitle, int index, const char *number)
 {
-    const MockContact *contact = &mock_contacts[index];
     GtkWidget *row = hbox(12);
     gtk_widget_set_valign(row, GTK_ALIGN_CENTER);
     pad(row, 6);
-    gtk_box_append(GTK_BOX(row), avatar(contact->name, 40));
+    gtk_box_append(GTK_BOX(row), avatar(name, 40));
     GtkWidget *copy = vbox(2);
     gtk_widget_set_hexpand(copy, TRUE);
-    gtk_box_append(GTK_BOX(copy), text_label(contact->name, "heading"));
+    GtkWidget *title = text_label(name, "heading");
+    gtk_label_set_ellipsize(GTK_LABEL(title), PANGO_ELLIPSIZE_END);
+    gtk_box_append(GTK_BOX(copy), title);
     gtk_box_append(GTK_BOX(copy), text_label(subtitle, "dim-label"));
     gtk_box_append(GTK_BOX(row), copy);
-    if (clickable) gtk_box_append(GTK_BOX(row), call_button(self, (int)index, "Call"));
+    if (number) gtk_box_append(GTK_BOX(row), call_button(self, index, number, "Call"));
     return row;
 }
 
@@ -176,21 +182,23 @@ static void render_contacts(MainView *self)
     clear_box(self->contacts_box);
     const char *query = gtk_editable_get_text(GTK_EDITABLE(self->contact_search));
     size_t found = 0;
-    char last_letter = 0;
+    gunichar last_letter = 0;
     GArray *sorted = g_array_new(FALSE, FALSE, sizeof(size_t));
     for (size_t i = 0; i < mock_contacts_count; i++) g_array_append_val(sorted, i);
     g_array_sort(sorted, contact_index_cmp);
     for (size_t n = 0; n < sorted->len && !self->model->empty_contacts; n++) {
         size_t i = g_array_index(sorted, size_t, n);
         if (!contact_matches(&mock_contacts[i], query)) continue;
-        char letter[2] = { g_ascii_toupper(mock_contacts[i].name[0]), 0 };
-        if (last_letter != letter[0]) {
+        gunichar first = g_unichar_toupper(g_utf8_get_char_validated(mock_contacts[i].name, -1));
+        char letter[8] = {0};
+        g_unichar_to_utf8(first, letter);
+        if (last_letter != first) {
             gtk_box_append(GTK_BOX(self->contacts_box), section(letter));
-            last_letter = letter[0];
+            last_letter = first;
         }
         GtkWidget *button = gtk_button_new();
         gtk_widget_add_css_class(button, "flat");
-        gtk_button_set_child(GTK_BUTTON(button), person_row(self, i, mock_contacts[i].mobile, FALSE));
+        gtk_button_set_child(GTK_BUTTON(button), person_row(self, mock_contacts[i].name, mock_contacts[i].numbers[0], (int)i, NULL));
         gtk_accessible_update_property(GTK_ACCESSIBLE(button), GTK_ACCESSIBLE_PROPERTY_LABEL,
                                        mock_contacts[i].name, -1);
         g_object_set_data(G_OBJECT(button), "contact-index", GINT_TO_POINTER((int)i + 1));
@@ -238,21 +246,36 @@ static void render_detail(MainView *self)
     GtkWidget *name = text_label(contact->name, "title-1");
     gtk_label_set_xalign(GTK_LABEL(name), 0.5);
     gtk_box_append(GTK_BOX(top), name);
-    GtkWidget *call = call_button(self, self->selected_contact, "Call");
+    GtkWidget *call = call_button(self, self->selected_contact, contact->numbers[0], "Call");
     gtk_widget_add_css_class(call, "suggested-action");
     gtk_box_append(GTK_BOX(top), call);
     gtk_box_append(GTK_BOX(self->detail), top);
     gtk_box_append(GTK_BOX(self->detail), section("Phone Numbers"));
-    gtk_box_append(GTK_BOX(self->detail), text_label("Mobile", "dim-label"));
-    gtk_box_append(GTK_BOX(self->detail), text_label(contact->mobile, NULL));
-    if (contact->work) {
-        gtk_box_append(GTK_BOX(self->detail), text_label("Work", "dim-label"));
-        gtk_box_append(GTK_BOX(self->detail), text_label(contact->work, NULL));
+    for (size_t n = 0; n < MOCK_CONTACT_NUMBERS && contact->numbers[n]; n++) {
+        GtkWidget *line = hbox(8);
+        GtkWidget *text = vbox(2);
+        gtk_widget_set_hexpand(text, TRUE);
+        gtk_box_append(GTK_BOX(text), text_label(contact->labels[n] ? contact->labels[n] : "Phone", "dim-label"));
+        gtk_box_append(GTK_BOX(text), text_label(contact->numbers[n], NULL));
+        gtk_box_append(GTK_BOX(line), text);
+        GtkWidget *dial = gtk_button_new_from_icon_name("call-start-symbolic");
+        char *tip = g_strdup_printf("Call %s", contact->numbers[n]);
+        gtk_widget_set_tooltip_text(dial, tip);
+        gtk_accessible_update_property(GTK_ACCESSIBLE(dial), GTK_ACCESSIBLE_PROPERTY_LABEL, tip, -1);
+        g_free(tip);
+        gtk_widget_add_css_class(dial, "flat");
+        gtk_widget_set_valign(dial, GTK_ALIGN_CENTER);
+        gtk_widget_set_sensitive(dial, can_call(self));
+        g_object_set_data(G_OBJECT(dial), "contact-index", GINT_TO_POINTER(self->selected_contact + 1));
+        g_object_set_data_full(G_OBJECT(dial), "number", g_strdup(contact->numbers[n]), g_free);
+        g_signal_connect(dial, "clicked", G_CALLBACK(call_contact), self);
+        gtk_box_append(GTK_BOX(line), dial);
+        gtk_box_append(GTK_BOX(self->detail), line);
     }
     gtk_box_append(GTK_BOX(self->detail), section("Recent Calls"));
     size_t count = 0;
     for (size_t i = 0; i < mock_recents_count; i++) {
-        if (mock_recents[i].contact_index != (size_t)self->selected_contact) continue;
+        if (g_strcmp0(mock_recents[i].name, contact->name) != 0) continue;
         const char *duration = mock_recents[i].duration ? mock_recents[i].duration : "";
         char *line = g_strdup_printf("%s  ·  %s%s%s", mock_recents[i].time,
             mock_recents[i].kind, *duration ? "  ·  " : "", duration);
@@ -295,7 +318,9 @@ static void render_recents(MainView *self)
     if (!*query) {
         gtk_box_append(GTK_BOX(self->recents_box), section("Favorites"));
         GtkWidget *favorites = hbox(8);
-        for (size_t i = 0; i < mock_contacts_count && !self->model->empty_favorites; i++) {
+        for (size_t f = 0; f < mock_favorites_count && !self->model->empty_favorites; f++) {
+            size_t i = mock_favorites[f];
+            if (i >= mock_contacts_count) continue;
             GtkWidget *button = gtk_button_new();
             GtkWidget *body = vbox(4);
             gtk_widget_set_halign(body, GTK_ALIGN_CENTER);
@@ -310,10 +335,11 @@ static void render_recents(MainView *self)
             gtk_accessible_update_property(GTK_ACCESSIBLE(button), GTK_ACCESSIBLE_PROPERTY_LABEL,
                 mock_contacts[i].name, -1);
             g_object_set_data(G_OBJECT(button), "contact-index", GINT_TO_POINTER((int)i + 1));
+            g_object_set_data_full(G_OBJECT(button), "number", g_strdup(mock_contacts[i].numbers[0]), g_free);
             g_signal_connect(button, "clicked", G_CALLBACK(call_contact), self);
             gtk_box_append(GTK_BOX(favorites), button);
         }
-        if (self->model->empty_favorites)
+        if (self->model->empty_favorites || !mock_favorites_count)
             gtk_box_append(GTK_BOX(favorites), text_label("No Favorites", "dim-label"));
         gtk_box_append(GTK_BOX(self->recents_box), favorites);
     }
@@ -332,16 +358,16 @@ static void render_recents(MainView *self)
     if (*query) {
         for (size_t i = 0; i < mock_contacts_count && !self->model->empty_contacts; i++) {
             if (!contact_matches(&mock_contacts[i], query)) continue;
-            gtk_box_append(GTK_BOX(self->recents_box), person_row(self, i, mock_contacts[i].mobile, TRUE));
+            gtk_box_append(GTK_BOX(self->recents_box), person_row(self, mock_contacts[i].name, mock_contacts[i].numbers[0], (int)i, mock_contacts[i].numbers[0]));
             found++;
         }
     } else {
         for (size_t i = 0; i < mock_recents_count && !self->model->empty_recents; i++) {
             const MockRecent *recent = &mock_recents[i];
-            if (recent->contact_index >= mock_contacts_count) continue;
             char *summary = recent->duration ? g_strdup_printf("%s · %s", recent->kind, recent->duration)
                                               : g_strdup(recent->kind);
-            GtkWidget *row = person_row(self, recent->contact_index, summary, TRUE);
+            GtkWidget *row = person_row(self, recent->name ? recent->name : recent->number, summary,
+                                        mock_ui_contact_named(recent->name), recent->number);
             g_free(summary);
             GtkWidget *when = text_label(recent->time, "dim-label");
             gtk_box_append(GTK_BOX(row), when);
@@ -397,8 +423,9 @@ static void dial_changed(GtkEditable *editable, gpointer user_data)
     const char *value = gtk_editable_get_text(editable);
     gtk_widget_set_sensitive(self->dial_button, *value != '\0' && can_call(self));
     const char *match = "";
-    if (*value) for (size_t i = 0; i < mock_contacts_count; i++)
-        if (number_contains(mock_contacts[i].mobile, value)) { match = mock_contacts[i].name; break; }
+    for (size_t i = 0; *value && !*match && i < mock_contacts_count; i++)
+        for (size_t n = 0; n < MOCK_CONTACT_NUMBERS && mock_contacts[i].numbers[n]; n++)
+            if (number_contains(mock_contacts[i].numbers[n], value)) { match = mock_contacts[i].name; break; }
     gtk_label_set_text(GTK_LABEL(self->dial_match), match);
 }
 
@@ -635,12 +662,17 @@ static void preferences_clicked(GtkButton *button, gpointer user_data)
     (void)button;
 }
 
+static const char *device_name(const MainView *self)
+{
+    return self->model->live ? "iPhone" : "Marwan's iPhone";
+}
+
 static GtkWidget *build_device_menu(MainView *self)
 {
     GtkWidget *popover = gtk_popover_new();
     GtkWidget *box = vbox(8);
     pad(box, 16);
-    gtk_box_append(GTK_BOX(box), text_label("Marwan's iPhone", "title-3"));
+    gtk_box_append(GTK_BOX(box), text_label(device_name(self), "title-3"));
     self->device_status = text_label("Connected", "dim-label");
     gtk_box_append(GTK_BOX(box), self->device_status);
     self->device_calls = text_label("Calls · Ready", NULL);
@@ -649,10 +681,16 @@ static GtkWidget *build_device_menu(MainView *self)
     gtk_box_append(GTK_BOX(box), self->device_calls);
     gtk_box_append(GTK_BOX(box), self->device_contacts);
     gtk_box_append(GTK_BOX(box), self->device_audio);
-    gtk_box_append(GTK_BOX(box), text_label("Battery · 72%", NULL));
-    gtk_box_append(GTK_BOX(box), text_label("Last contact sync · 2 minutes ago", NULL));
+    self->device_battery = text_label("", NULL);
+    gtk_box_append(GTK_BOX(box), self->device_battery);
+    self->device_sync = text_label("", NULL);
+    gtk_label_set_wrap(GTK_LABEL(self->device_sync), TRUE);
+    gtk_label_set_max_width_chars(GTK_LABEL(self->device_sync), 32);
+    gtk_box_append(GTK_BOX(box), self->device_sync);
     gtk_box_append(GTK_BOX(box), action_button("Sync Contacts", MOCK_MAIN_SYNC, self));
-    gtk_box_append(GTK_BOX(box), action_button("Disconnect", MOCK_MAIN_DISCONNECT, self));
+    GtkWidget *disconnect = action_button("Disconnect", MOCK_MAIN_DISCONNECT, self);
+    gtk_widget_set_visible(disconnect, !self->model->live); /* The user disconnects in Bluetooth settings. */
+    gtk_box_append(GTK_BOX(box), disconnect);
     gtk_popover_set_child(GTK_POPOVER(popover), box);
     return popover;
 }
@@ -726,7 +764,9 @@ GtkWidget *mock_main_window_new(GtkApplication *app, MockUiModel *model,
     adw_breakpoint_bin_set_child(ADW_BREAKPOINT_BIN(header_bin), title_stack);
     adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), header_bin);
     self->device = gtk_menu_button_new();
-    gtk_menu_button_set_label(GTK_MENU_BUTTON(self->device), "Marwan's iPhone ●");
+    char *device_label = g_strdup_printf("%s ●", device_name(self));
+    gtk_menu_button_set_label(GTK_MENU_BUTTON(self->device), device_label);
+    g_free(device_label);
     gtk_menu_button_set_popover(GTK_MENU_BUTTON(self->device), build_device_menu(self));
     adw_header_bar_pack_end(ADW_HEADER_BAR(header), self->device);
     GtkWidget *menu = gtk_button_new_from_icon_name("open-menu-symbolic");
@@ -734,6 +774,7 @@ GtkWidget *mock_main_window_new(GtkApplication *app, MockUiModel *model,
     gtk_accessible_update_property(GTK_ACCESSIBLE(menu), GTK_ACCESSIBLE_PROPERTY_LABEL,
                                    "Preferences", -1);
     g_signal_connect(menu, "clicked", G_CALLBACK(preferences_clicked), self);
+    gtk_widget_set_visible(menu, !self->model->live); /* Preferences are not stored yet. */
     adw_header_bar_pack_end(ADW_HEADER_BAR(header), menu);
     adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), header);
     self->screen = gtk_stack_new();
@@ -752,13 +793,16 @@ GtkWidget *mock_main_window_new(GtkApplication *app, MockUiModel *model,
     g_value_unset(&reveal);
     adw_breakpoint_bin_add_breakpoint(ADW_BREAKPOINT_BIN(header_bin), narrow_nav);
     gtk_stack_add_named(GTK_STACK(self->screen), status_screen(self, "phone-symbolic",
-        "Connect your iPhone", "Connect your iPhone to make and receive calls from your GNOME desktop.\nPreviously connected: Marwan's iPhone",
-        "Find iPhone", MOCK_MAIN_CONNECT, FALSE), "disconnected");
+        "Connect your iPhone", self->model->live
+            ? "Connect your iPhone in Bluetooth settings to make and receive calls from your GNOME desktop."
+            : "Connect your iPhone to make and receive calls from your GNOME desktop.\nPreviously connected: Marwan's iPhone",
+        self->model->live ? "Open Bluetooth Settings" : "Find iPhone", MOCK_MAIN_CONNECT, FALSE), "disconnected");
     gtk_stack_add_named(GTK_STACK(self->screen), status_screen(self, "phone-symbolic",
         "Connecting to Marwan's iPhone…", "Preparing calls…\nLoading contacts…",
         NULL, MOCK_MAIN_CONNECT, TRUE), "connecting");
     gtk_stack_add_named(GTK_STACK(self->screen), status_screen(self, "dialog-error-symbolic",
-        "Couldn't Connect", "IBlueConnect couldn't connect to Marwan's iPhone.",
+        "Couldn't Connect", self->model->live ? "IBlueConnect couldn't reach its background service."
+                                              : "IBlueConnect couldn't connect to Marwan's iPhone.",
         "Try Again", MOCK_MAIN_RETRY, FALSE), "error");
     adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar), self->screen);
     adw_application_window_set_content(ADW_APPLICATION_WINDOW(self->window), toolbar);
@@ -794,7 +838,8 @@ void mock_main_window_update(GtkWidget *window)
     }
     gtk_stack_set_visible_child_name(GTK_STACK(self->screen), name);
     gtk_menu_button_set_label(GTK_MENU_BUTTON(self->device),
-        self->model->connection == MOCK_CONNECTION_CONNECTED ? "Marwan's iPhone ●" : "iPhone ×");
+        self->model->connection != MOCK_CONNECTION_CONNECTED ? "iPhone ×" :
+        self->model->live ? "iPhone ●" : "Marwan's iPhone ●");
     gtk_label_set_text(GTK_LABEL(self->device_status),
         self->model->connection == MOCK_CONNECTION_CONNECTED ? "Connected" : "Disconnected");
     gtk_label_set_text(GTK_LABEL(self->device_calls),
@@ -804,7 +849,10 @@ void mock_main_window_update(GtkWidget *window)
         self->model->contact_sync_error ? "Contacts · Update failed" : "Contacts · Synced");
     gtk_label_set_text(GTK_LABEL(self->device_audio),
         self->model->connection == MOCK_CONNECTION_CONNECTED ? "Audio · Ready" : "Audio · Unavailable");
+    gtk_label_set_text(GTK_LABEL(self->device_battery), self->model->battery);
+    gtk_label_set_text(GTK_LABEL(self->device_sync), self->model->sync_label);
     adw_banner_set_revealed(ADW_BANNER(self->calls_error), self->model->calls_unavailable);
+    if (self->model->live) adw_banner_set_title(ADW_BANNER(self->sync_error), self->model->sync_label);
     adw_banner_set_revealed(ADW_BANNER(self->sync_error), self->model->contact_sync_error);
     gboolean ready = self->model->connection == MOCK_CONNECTION_CONNECTED && !self->model->calls_unavailable;
     gtk_label_set_text(GTK_LABEL(self->link_status), ready ? "━━━━━━" : "━━ × ━━");

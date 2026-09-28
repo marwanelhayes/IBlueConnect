@@ -9,5 +9,4 @@ pub mod history_tracker;
 pub mod ofono;
 pub mod pbap;
 pub mod presentation;
-pub mod notifications;
 pub mod vcard;

@@ -24,3 +24,7 @@ GTK_USE_PORTAL=0 GIO_USE_VFS=local NO_AT_BRIDGE=1 \
         timeout 20 "$2"
         timeout 20 "$3"
     ' sh "$root/target/iblueconnect-mock" "$root/target/test-main-view" "$root/target/test-call-popup"
+cc -std=c11 -Wall -Wextra -Werror \
+    "$root/src/mock-ui/test-live.c" "$root/src/mock-ui/live.c" "$root/src/mock-ui/mock-state.c" \
+    -o "$root/target/test-live" $(pkg-config --cflags --libs glib-2.0)
+"$root/target/test-live"

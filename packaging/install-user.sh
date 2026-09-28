@@ -12,7 +12,8 @@ fi
 
 CARGO_TARGET_DIR="$root/target" "$cargo" build --offline --release --manifest-path "$root/Cargo.toml" --bin iblueconnectd
 mkdir -p "$root/target"
-cc "$root/src/iblueconnect-ui.c" -o "$root/target/iblueconnect" $(pkg-config --cflags --libs gtk4 gtk4-x11 libadwaita-1 x11)
+sh "$root/packaging/build-mock-ui.sh" >/dev/null
+cp "$root/target/iblueconnect-mock" "$root/target/iblueconnect"
 
 install -Dm755 "$root/target/release/iblueconnectd" "$HOME/.local/bin/iblueconnectd"
 install -Dm755 "$root/target/iblueconnect" "$HOME/.local/bin/iblueconnect"

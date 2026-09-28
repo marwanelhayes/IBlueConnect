@@ -23,14 +23,18 @@ typedef enum {
     MOCK_CALL_ENDED
 } MockCall;
 
+/* ponytail: fixed cap per contact; extra numbers are dropped. Use a dynamic list if contacts need more. */
+#define MOCK_CONTACT_NUMBERS 4
+
 typedef struct {
     const char *name;
-    const char *mobile;
-    const char *work;
+    const char *numbers[MOCK_CONTACT_NUMBERS]; /* numbers[0] is the primary number. */
+    const char *labels[MOCK_CONTACT_NUMBERS];
 } MockContact;
 
 typedef struct {
-    size_t contact_index;
+    const char *name; /* NULL when the caller is not a contact. */
+    const char *number;
     const char *kind;
     const char *time;
     const char *duration;
@@ -51,6 +55,10 @@ typedef struct {
     size_t audio_index;
     int caller_index; /* -1 means unknown caller. */
     char dialed_number[64]; /* Used when dialing a number without a contact match. */
+    char call_id[128]; /* Daemon call id in live mode. */
+    char battery[48];
+    char sync_label[160];
+    bool live; /* Call phases come from the daemon; ticks only advance timers and banners. */
     bool contact_sync_error;
     bool calls_unavailable;
     bool empty_contacts;
@@ -59,14 +67,21 @@ typedef struct {
     bool empty_audio_devices;
 } MockUiModel;
 
-extern const MockContact mock_contacts[];
-extern const size_t mock_contacts_count;
-extern const MockRecent mock_recents[];
-extern const size_t mock_recents_count;
+/* The active data set: built-in mock data by default, replaced by mock_ui_set_data(). */
+extern const MockContact *mock_contacts;
+extern size_t mock_contacts_count;
+extern const MockRecent *mock_recents;
+extern size_t mock_recents_count;
+extern const size_t *mock_favorites;
+extern size_t mock_favorites_count;
 extern const MockAudioDevice mock_audio_devices[];
 extern const size_t mock_audio_devices_count;
 
 void mock_ui_init(MockUiModel *model);
+void mock_ui_set_data(const MockContact *contacts, size_t contacts_count,
+                      const MockRecent *recents, size_t recents_count,
+                      const size_t *favorites, size_t favorites_count);
+int mock_ui_contact_named(const char *name);
 void mock_ui_set_connection(MockUiModel *model, MockConnection connection);
 void mock_ui_incoming(MockUiModel *model, int contact_index);
 void mock_ui_outgoing(MockUiModel *model, int contact_index);

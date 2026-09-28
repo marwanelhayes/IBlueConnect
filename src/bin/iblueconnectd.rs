@@ -9,7 +9,6 @@ use iblueconnect::call_log::{self, PhoneCall};
 use iblueconnect::contacts_store::{ContactStore, Entry};
 use iblueconnect::history::CallRecord;
 use iblueconnect::history_tracker::HistoryTracker;
-use iblueconnect::notifications::{self, IncomingAction, IncomingNotifications, NotificationEvent};
 use iblueconnect::ofono::{OfonoBackend, OfonoCall};
 use iblueconnect::pbap::pull_phonebook;
 use iblueconnect::presentation::{Effect, PresentationPolicy};
@@ -48,7 +47,6 @@ enum Message {
     Lost(u64),
     Retry,
     ContactsPulled(Option<Vec<Entry>>, Option<Vec<PhoneCall>>),
-    Notification(NotificationEvent),
 }
 
 #[derive(Default)]
@@ -145,7 +143,6 @@ struct Worker {
     epoch: ListenerEpoch,
     calls: Vec<OfonoCall>,
     presenter: Presenter,
-    notifications: IncomingNotifications,
     contacts: Contacts,
 }
 
@@ -155,7 +152,7 @@ impl Worker {
             Ok(history) => Some(history),
             Err(_) => { eprintln!("Call history unavailable"); None }
         });
-        Self { backend: Backend::new(), history, ofono: None, tx, notifications: IncomingNotifications::new(session.clone()), session, lock_session, epoch: ListenerEpoch::default(), calls: Vec::new(), presenter: Presenter::new(), contacts: Contacts::open() }
+        Self { backend: Backend::new(), history, ofono: None, tx, session, lock_session, epoch: ListenerEpoch::default(), calls: Vec::new(), presenter: Presenter::new(), contacts: Contacts::open() }
     }
 
     fn reconcile(&mut self, calls: &[OfonoCall]) {
@@ -183,16 +180,7 @@ impl Worker {
         let mut effects = Vec::new();
         self.presenter.observe_with(self.backend.observation(), &caller,
             || (screen_locked(lock_session), dnd_active()), &mut |effect| effects.push(effect.clone()));
-        for effect in effects {
-            match effect {
-                Effect::ShowIncoming(id, label) => {
-                    if self.notifications.show(&id, &label).is_err() { eprintln!("Incoming call notification unavailable"); }
-                }
-                Effect::HideIncoming(id) => self.notifications.hide(&id),
-                Effect::Alert(..) => run_effect(&effect),
-                _ => {}
-            }
-        }
+        for effect in effects { run_effect(&effect); }
     }
 
     fn unavailable(&mut self) {
@@ -453,16 +441,29 @@ fn dnd_active() -> bool {
         .is_none_or(|output| output.stdout.trim_ascii() != b"true")
 }
 
+/// The GUI shows its floating call controller; ringing ends are followed from Snapshot.
+fn effect_command(effect: &Effect, ui: &std::path::Path) -> Option<(std::path::PathBuf, &'static [&'static str])> {
+    match effect {
+        Effect::ShowIncoming(..) => Some((ui.to_path_buf(), &["--background"])),
+        Effect::Alert(..) => Some(("canberra-gtk-play".into(), &["-i", "phone-incoming-call"])),
+        _ => None,
+    }
+}
+
 fn run_effect(effect: &Effect) {
-    let (program, args): (std::path::PathBuf, &[&str]) = match effect {
-        Effect::Alert(..) => ("canberra-gtk-play".into(), &["-i", "phone-incoming-call"]),
-        _ => return,
-    };
+    let Some((program, args)) = effect_command(effect, &ui_binary()) else { return };
     match std::process::Command::new(program).args(args).spawn() {
         // Reap in the background so finished helpers do not linger as zombies.
         Ok(mut child) => { thread::spawn(move || child.wait()); }
-        Err(_) => eprintln!("Incoming call sound could not start"),
+        Err(_) => eprintln!("Incoming call controller or sound could not start"),
     }
+}
+
+fn ui_binary() -> std::path::PathBuf {
+    std::env::current_exe().ok()
+        .and_then(|exe| Some(exe.parent()?.join("iblueconnect")))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| "iblueconnect".into())
 }
 
 fn caller_label(observed: &Observation, calls: &[OfonoCall], contacts: &[Entry]) -> String {
@@ -575,20 +576,6 @@ fn run_worker(rx: Receiver<Message>, tx: Sender<Message>, session: Connection, l
                 let lost = worker.refresh().is_err();
                 if lost || worker.backend.observation() != &before { worker.changed(); }
             }
-            Message::Notification(NotificationEvent::Action(id, key)) => {
-                if let Some((call_id, action)) = worker.notifications.action(id, &key) {
-                    match action {
-                        IncomingAction::Answer | IncomingAction::Decline => {
-                            let call_action = if action == IncomingAction::Answer { CallAction::Answer } else { CallAction::Decline };
-                            let succeeded = matches!(worker.handle(Operation::Action(call_action, call_id)), Reply::Done(Ok(())));
-                            worker.notifications.complete_action(id, succeeded);
-                            if !succeeded { eprintln!("Incoming call action failed"); }
-                        }
-                        IncomingAction::Ignore => worker.notifications.ignore(id),
-                    }
-                }
-            }
-            Message::Notification(NotificationEvent::Closed(id)) => worker.notifications.ignore(id),
             Message::ContactsPulled(entries, calls) => {
                 let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |time| time.as_secs() as i64);
                 worker.contacts.finish(entries, calls, now);
@@ -608,11 +595,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .serve_at(PATH, Service(tx.clone()))?
         .build()?;
     let lock_session = Connection::session()?;
-    let notification_session = Connection::session()?;
-    let notify_tx = tx.clone();
-    if notifications::listen(notification_session, move |event| { let _ = notify_tx.send(Message::Notification(event)); }).is_err() {
-        eprintln!("Desktop notification actions unavailable");
-    }
     thread::spawn(move || run_worker(rx, tx, session, lock_session)).join()
         .expect("calling worker stopped");
     Ok(())
@@ -668,7 +650,7 @@ mod tests {
         thread::spawn(move || {
             let worker = Worker {
                 backend: Backend::new(), history: None, ofono: None, tx,
-                notifications: IncomingNotifications::new(session.clone()), session,
+                session,
                 lock_session, epoch: ListenerEpoch::default(), calls: Vec::new(), presenter: Presenter::new(),
                 contacts: Contacts { store: None, running: false, failed: false },
             };
@@ -719,6 +701,16 @@ mod tests {
         assert!(answer_guard(&answer, || None).is_err());
         let decline = Operation::Action(CallAction::Decline, "call-1".into());
         assert!(answer_guard(&decline, || panic!("lock query should be skipped")).is_ok());
+    }
+
+    #[test]
+    fn incoming_opens_the_call_controller_and_alert_plays_the_sound() {
+        let ui = std::path::Path::new("/opt/iblueconnect");
+        assert_eq!(effect_command(&Effect::ShowIncoming("c".into(), "n".into()), ui),
+            Some((ui.to_path_buf(), &["--background"][..])));
+        assert_eq!(effect_command(&Effect::Alert("c".into(), 0), ui).map(|(program, _)| program),
+            Some("canberra-gtk-play".into()));
+        assert_eq!(effect_command(&Effect::HideIncoming("c".into()), ui), None);
     }
 
     #[test]
