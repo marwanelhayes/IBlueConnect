@@ -313,6 +313,130 @@ static void contact_details(void)
     g_object_unref(app);
 }
 
+static GtkWidget *find_tooltip(GtkWidget *root, const char *text)
+{
+    if (GTK_IS_BUTTON(root) && g_strcmp0(gtk_widget_get_tooltip_text(root), text) == 0) return root;
+    for (GtkWidget *child = gtk_widget_get_first_child(root); child;
+         child = gtk_widget_get_next_sibling(child)) {
+        GtkWidget *found = find_tooltip(child, text);
+        if (found) return found;
+    }
+    return NULL;
+}
+
+static GtkWidget *find_pref_row(GtkWidget *root, const char *title)
+{
+    if (ADW_IS_PREFERENCES_ROW(root) &&
+        g_strcmp0(adw_preferences_row_get_title(ADW_PREFERENCES_ROW(root)), title) == 0) return root;
+    for (GtkWidget *child = gtk_widget_get_first_child(root); child;
+         child = gtk_widget_get_next_sibling(child)) {
+        GtkWidget *found = find_pref_row(child, title);
+        if (found) return found;
+    }
+    return NULL;
+}
+
+static void press(GtkWidget *window, const char *accel)
+{
+    GListModel *controllers = gtk_widget_observe_controllers(window);
+    gboolean done = FALSE;
+    for (guint i = 0; i < g_list_model_get_n_items(controllers) && !done; i++) {
+        GObject *c = g_list_model_get_item(controllers, i);
+        if (GTK_IS_SHORTCUT_CONTROLLER(c)) {
+            for (guint j = 0; j < g_list_model_get_n_items(G_LIST_MODEL(c)) && !done; j++) {
+                GtkShortcut *sc = g_list_model_get_item(G_LIST_MODEL(c), j);
+                char *trigger = gtk_shortcut_trigger_to_string(gtk_shortcut_get_trigger(sc));
+                if (g_strcmp0(trigger, accel) == 0)
+                    done = gtk_shortcut_action_activate(gtk_shortcut_get_action(sc), 0, window, NULL);
+                g_free(trigger);
+                g_object_unref(sc);
+            }
+        }
+        g_object_unref(c);
+    }
+    g_object_unref(controllers);
+    g_assert_true(done);
+}
+
+static void device_popover(void)
+{
+    MockUiModel model;
+    mock_ui_init(&model);
+    Event event = {0};
+    GtkApplication *app = gtk_application_new("org.iblueconnect.MockDeviceTest", 0);
+    g_application_register(G_APPLICATION(app), NULL, NULL);
+    GtkWidget *window = mock_main_window_new(app, &model, on_action, &event);
+    g_assert_nonnull(find_label(window, "Connected"));
+    g_assert_nonnull(find_label(window, "Calls · Ready"));
+    g_assert_nonnull(find_label(window, "Contacts · Synced"));
+    g_assert_nonnull(find_label(window, "Audio · Ready"));
+    g_assert_nonnull(find_label(window, "Battery · 72%"));
+    g_assert_nonnull(find_label(window, "Last contact sync · 2 minutes ago"));
+    g_signal_emit_by_name(find_button(window, "Sync Contacts"), "clicked");
+    g_assert_cmpint(event.action, ==, MOCK_MAIN_SYNC);
+    g_signal_emit_by_name(find_button(window, "Disconnect"), "clicked");
+    g_assert_cmpint(event.action, ==, MOCK_MAIN_DISCONNECT);
+    model.connection = MOCK_CONNECTION_DISCONNECTED;
+    mock_main_window_update(window);
+    g_assert_nonnull(find_label(window, "Disconnected"));
+    g_assert_nonnull(find_label(window, "Calls · Unavailable"));
+    g_assert_nonnull(find_label(window, "Audio · Unavailable"));
+    g_assert_nonnull(find_label(window, "iPhone ×"));
+    gtk_window_destroy(GTK_WINDOW(window));
+    g_free(event.value);
+    g_object_unref(app);
+}
+
+static void preferences(void)
+{
+    MockUiModel model;
+    mock_ui_init(&model);
+    GtkApplication *app = gtk_application_new("org.iblueconnect.MockPrefsTest", 0);
+    g_application_register(G_APPLICATION(app), NULL, NULL);
+    GtkWidget *window = mock_main_window_new(app, &model, NULL, NULL);
+    g_signal_emit_by_name(find_tooltip(window, "Preferences"), "clicked");
+    GtkWidget *prefs = NULL;
+    GListModel *tops = gtk_window_get_toplevels();
+    for (guint i = 0; i < g_list_model_get_n_items(tops) && !prefs; i++) {
+        GtkWindow *w = g_list_model_get_item(tops, i);
+        if (ADW_IS_PREFERENCES_WINDOW(w)) prefs = GTK_WIDGET(w);
+        g_object_unref(w);
+    }
+    g_assert_nonnull(prefs);
+    const char *rows[] = { "Start IBlueConnect automatically", "Reconnect automatically",
+        "Show incoming-call notifications", "Sync contacts automatically", "Show contact photos",
+        "Show floating call controller", "Keep call controller visible during calls",
+        "Show audio activity visualization", "Follow system appearance" };
+    for (size_t i = 0; i < G_N_ELEMENTS(rows); i++)
+        g_assert_nonnull(find_pref_row(prefs, rows[i]));
+    GtkWidget *toggle = find_pref_row(prefs, "Show contact photos");
+    g_assert_true(ADW_IS_SWITCH_ROW(toggle));
+    adw_switch_row_set_active(ADW_SWITCH_ROW(toggle), FALSE);
+    g_assert_false(adw_switch_row_get_active(ADW_SWITCH_ROW(toggle)));
+    gtk_window_destroy(GTK_WINDOW(prefs));
+    gtk_window_destroy(GTK_WINDOW(window));
+    g_object_unref(app);
+}
+
+static void keyboard_shortcuts(void)
+{
+    MockUiModel model;
+    mock_ui_init(&model);
+    GtkApplication *app = gtk_application_new("org.iblueconnect.MockKeysTest", 0);
+    g_application_register(G_APPLICATION(app), NULL, NULL);
+    GtkWidget *window = mock_main_window_new(app, &model, NULL, NULL);
+    GtkWidget *pages = find_pages(window);
+    press(window, "<Control>d");
+    g_assert_cmpstr(adw_view_stack_get_visible_child_name(ADW_VIEW_STACK(pages)), ==, "dial");
+    press(window, "<Control>f");
+    g_assert_cmpstr(adw_view_stack_get_visible_child_name(ADW_VIEW_STACK(pages)), ==, "recents");
+    press(window, "<Control>n");
+    g_assert_cmpstr(adw_view_stack_get_visible_child_name(ADW_VIEW_STACK(pages)), ==, "dial");
+    press(window, "Escape");
+    gtk_window_destroy(GTK_WINDOW(window));
+    g_object_unref(app);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -324,5 +448,8 @@ int main(int argc, char **argv)
     g_test_add_func("/main/adaptive-contacts", contacts_adapt_to_window_width);
     g_test_add_func("/main/search-number", home_search_calls_typed_number);
     g_test_add_func("/main/contact-details", contact_details);
+    g_test_add_func("/main/device-popover", device_popover);
+    g_test_add_func("/main/preferences", preferences);
+    g_test_add_func("/main/keyboard-shortcuts", keyboard_shortcuts);
     return g_test_run();
 }
