@@ -1,5 +1,11 @@
 # Feasibility record
 
+## 2026-09-28 UI-only prototype boundary
+
+The `gnome-frontend-update` branch adds a standalone GTK 4/libadwaita mock frontend under `src/mock-ui/`. Its connection, contact, call, audio-device, and popup states are simulated. Passing its UI tests demonstrates only interface behavior; it adds no hardware evidence and does not change the installed daemon, oFono, BlueZ, or PipeWire route. Real backend wiring and live call acceptance remain deferred.
+
+The mock popup requests top-right, above-window placement on X11. Wayland falls back to an ordinary GTK window; neither path has yet been checked under the user's live GNOME Shell. The virtual-display interaction checks validate widget/state behavior only.
+
 Observed on 2026-09-24 through read-only system inspection during a user-operated call.
 
 ## Existing route

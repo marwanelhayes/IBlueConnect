@@ -4,6 +4,29 @@ IBlueConnect lets an iPhone use an Ubuntu laptop as a hands-free endpoint for ce
 
 The current target is Ubuntu 24.04 GNOME on X11 with PipeWire, WirePlumber, BlueZ, oFono, and a system-selected wired headset or microphone. Other devices and desktops have not been accepted as V1 targets. The app is local-only and stores synced contacts and recent calls in user-owned files.
 
+## Explore the GNOME interface prototype
+
+The separate mock frontend lets you test the proposed GNOME experience without connecting a phone or changing the installed calling setup. It does not use the daemon or place calls:
+
+```sh
+sh packaging/build-mock-ui.sh
+./target/iblueconnect-mock --developer
+```
+
+The main window contains the proposed navigation and device states. The separate **IBlueConnect Mock Controls** window simulates incoming, outgoing, connected, disconnected, and error states. You can close the main window while using the mock floating call controller. Run `sh packaging/test-mock-ui.sh` for its headless interaction check.
+
+The mock UI follows the system light/dark appearance; its developer controls can preview either appearance without changing GNOME settings. Press Ctrl+Q or **Quit Mock App** to stop it.
+
+Backend work deferred from this prototype:
+
+| Mock feature | Future integration |
+|---|---|
+| Floating incoming/outgoing/active controller | Connect to real call state and decide how it coexists with the installed GNOME notification flow. |
+| Mute, audio choices, iPhone handoff, and in-call keypad | Bind to verified telephony and audio capabilities; current controls only change mock state. |
+| Device status, connection/error states, preferences, contacts and recent calls | Bind to daemon data and persistence; current values are fixtures and preference switches are session-only. |
+
+X11 can place the mock call panel near the top-right and request above-window visibility. Wayland uses a normal GTK window because GNOME does not give applications reliable absolute placement. Headless UI tests do not establish live GNOME Shell behavior.
+
 ## How it fits together
 
 ```text
@@ -29,11 +52,13 @@ The daemon owns call state and publishes a snapshot and change signals over sess
 |---|---|
 | `src/bin/iblueconnectd.rs` | Background daemon, session D-Bus API, sync and event coordination |
 | `src/iblueconnect-ui.c` | GTK 4/libadwaita window and call controls |
+| `src/mock-ui/` | Standalone GTK 4/libadwaita interface prototype with mock state and developer controls |
 | `src/ofono.rs`, `src/backend.rs`, `src/call.rs` | oFono integration and call state |
 | `src/audio.rs`, `src/notifications.rs`, `src/presentation.rs` | Audio-route observation and incoming-call presentation |
 | `src/pbap.rs`, `src/vcard.rs` | OBEX/PBAP phonebook and call-history parsing |
 | `src/contacts_store.rs`, `src/history*.rs`, `src/call_log.rs` | Private cache, local recents, and merge logic |
 | `packaging/install-user.sh` | Build and install the user daemon, UI, service, and desktop launcher |
+| `packaging/build-mock-ui.sh`, `packaging/test-mock-ui.sh` | Build and check the UI-only prototype |
 | `packaging/ofono-*.sh` | Enable the approved HFP backend or restore the native backend |
 | `packaging/build-rnnoise.sh`, `packaging/rnnoise.sh` | Build and separately enable or roll back microphone noise suppression |
 | `packaging/systemd/`, `packaging/desktop/` | Login service and application launcher |

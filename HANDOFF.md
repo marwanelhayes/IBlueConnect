@@ -2,6 +2,14 @@
 
 Date: 2026-09-24. Workspace: `/home/marwan-ahmed/Work/IBlueConnect`. Supersedes the older /tmp handoffs.
 
+## 2026-09-28 GNOME mock frontend in progress
+
+The user requested a complete GTK 4/libadwaita **UI-only** prototype, including a separate floating call controller, developer simulation controls, adaptive contacts/recents/dialer, and mock settings and error states. Work is on `gnome-frontend-update`; the branch was pushed to GitHub before implementation. The prototype lives under `src/mock-ui/`, builds with `packaging/build-mock-ui.sh`, and is intentionally separate from the installed Rust daemon and production GTK UI. It uses no phone, Bluetooth, audio, or telephony backend. The new popup requirement applies to this mock prototype; the 2026-09-25 GNOME notification decision remains the behavior of the installed app until a separate backend integration decision. No installed service has been restarted for this work. The user explicitly requested regular GitHub pushes and final merge to main, superseding the older “user handles Git” note below for this task.
+
+Session 2 (TDD): the home search now offers "Call <number>" for number-like queries. Avatars are native `AdwAvatar`. The expanded controller shows labeled Mute/Audio/End buttons, and the compact controller shows icons only. A missed-call tint no longer colors the Call button. Tests were added for the popup `M` key, End → Call Ended → dismiss, and contact details. `packaging/test-mock-ui.sh` passes. Session handoff: `/tmp/handoff-x0nE1A.md`.
+
+The mock call panel uses X11 positioning and an above-window request when X11 is available; on Wayland it is a normal GTK window. Virtual-display tests do not prove GNOME Shell placement or stacking. Real call state, mute, device selection/handoff, keypad tones, contacts/recents, connection states, and preference persistence are deferred backend wiring; `README.md` lists the boundary.
+
 ## 2026-09-28 durable RNNoise call check
 
 Two user-operated calls after durable RNNoise enable had no audio in either direction. During the second call, a private Snapshot reported `ready/active/unknown`; PipeWire had zero HFP playback and zero HFP capture streams. WirePlumber logged one SCO transport failure with `Transport endpoint is not connected`. After the user ended the call, a fresh private Snapshot was `ready/idle` with zero HFP streams; PipeWire, WirePlumber, filter-chain, and oFono were active. No services or configuration were changed. SCO stream setup is the immediate failure to investigate; a filter interaction is not yet ruled out. Any service restart needs user approval and a fresh private idle check. The user must reconnect the phone manually if it drops.
