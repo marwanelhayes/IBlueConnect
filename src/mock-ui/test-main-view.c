@@ -470,7 +470,17 @@ static void comfortable_proportions(void)
     g_assert_nonnull(icon);
     int icon_min = 0;
     gtk_widget_measure(icon, GTK_ORIENTATION_VERTICAL, -1, &icon_min, NULL, NULL, NULL);
-    g_assert_cmpint(icon_min, >=, 24);
+    g_assert_cmpint(icon_min, >=, 32);
+    GtkWidget *pages = find_pages(window);
+    adw_view_stack_set_visible_child_name(ADW_VIEW_STACK(pages), "dial");
+    for (int i = 0; i < 20; i++) while (g_main_context_iteration(NULL, FALSE));
+    GtkWidget *dial = adw_view_stack_get_visible_child(ADW_VIEW_STACK(pages));
+    graphene_rect_t five;
+    g_assert_true(gtk_widget_compute_bounds(find_button(dial, "5"), dial, &five));
+    g_assert_cmpint(gtk_widget_get_height(window), <=, 700);
+    g_assert_cmpfloat(five.size.width, <=, 80);
+    g_assert_cmpfloat(five.size.height, <=, 80);
+    g_assert_cmpfloat(ABS(five.origin.x + five.size.width / 2 - gtk_widget_get_width(dial) / 2.0), <=, 2);
     gtk_window_destroy(GTK_WINDOW(window));
     g_object_unref(app);
 }

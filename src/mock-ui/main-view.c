@@ -408,6 +408,7 @@ static GtkWidget *build_dial(MainView *self)
     pad(page, 20);
     self->dial_entry = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(self->dial_entry), "Enter a number");
+    gtk_widget_add_css_class(self->dial_entry, "comfy-search");
     gtk_entry_set_input_purpose(GTK_ENTRY(self->dial_entry), GTK_INPUT_PURPOSE_PHONE);
     gtk_accessible_update_property(GTK_ACCESSIBLE(self->dial_entry), GTK_ACCESSIBLE_PROPERTY_LABEL,
                                    "Phone number", -1);
@@ -415,25 +416,27 @@ static GtkWidget *build_dial(MainView *self)
     self->dial_match = text_label("", "dim-label");
     gtk_box_append(GTK_BOX(page), self->dial_match);
     GtkWidget *grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(grid), 4);
-    gtk_grid_set_column_spacing(GTK_GRID(grid), 4);
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 12);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 20);
+    gtk_widget_set_halign(grid, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(grid, GTK_ALIGN_CENTER);
     gtk_widget_set_vexpand(grid, TRUE);
     static const char *digits[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#" };
     for (int i = 0; i < 12; i++) {
         GtkWidget *key = gtk_button_new_with_label(digits[i]);
-        gtk_widget_add_css_class(key, "title-3");
-        gtk_widget_set_hexpand(key, TRUE);
-        gtk_widget_set_vexpand(key, TRUE);
-        gtk_widget_set_size_request(key, 72, 42);
+        gtk_widget_add_css_class(key, "title-2");
+        gtk_widget_add_css_class(key, "circular");
+        gtk_widget_add_css_class(key, "dial-key");
         g_object_set_data(G_OBJECT(key), "digit", (gpointer)digits[i]);
         g_signal_connect(key, "clicked", G_CALLBACK(digit_clicked), self);
         gtk_grid_attach(GTK_GRID(grid), key, i % 3, i / 3, 1, 1);
     }
     gtk_box_append(GTK_BOX(page), grid);
-    GtkWidget *actions = hbox(8);
+    GtkWidget *actions = hbox(12);
+    gtk_widget_set_halign(actions, GTK_ALIGN_CENTER);
     self->dial_button = gtk_button_new_with_label("Call");
     gtk_widget_add_css_class(self->dial_button, "suggested-action");
-    gtk_widget_set_hexpand(self->dial_button, TRUE);
+    gtk_widget_add_css_class(self->dial_button, "pill");
     gtk_widget_set_sensitive(self->dial_button, FALSE);
     g_signal_connect(self->dial_button, "clicked", G_CALLBACK(dial_clicked), self);
     g_signal_connect(self->dial_entry, "activate", G_CALLBACK(dial_clicked), self);
@@ -695,7 +698,8 @@ GtkWidget *mock_main_window_new(GtkApplication *app, MockUiModel *model,
     if (!css) {
         css = gtk_css_provider_new();
         gtk_css_provider_load_from_string(css,
-            "viewswitcherbar image { -gtk-icon-size: 24px; }"
+            "viewswitcherbar image { -gtk-icon-size: 32px; }"
+            ".dial-key { min-width: 64px; min-height: 64px; padding: 0; }"
             ".comfy-search { min-height: 44px; font-size: 1.1em; }"
             ".connection-card { padding: 20px; }");
         gtk_style_context_add_provider_for_display(gdk_display_get_default(),
