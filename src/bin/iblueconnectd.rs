@@ -9,7 +9,7 @@ use iblueconnect::call_log::{self, PhoneCall};
 use iblueconnect::contacts_store::{ContactStore, Entry};
 use iblueconnect::history::CallRecord;
 use iblueconnect::history_tracker::HistoryTracker;
-use iblueconnect::ofono::{OfonoBackend, OfonoCall};
+use iblueconnect::ofono::{ModemWatch, OfonoBackend, OfonoCall};
 use iblueconnect::pbap::pull_phonebook;
 use iblueconnect::presentation::{Effect, PresentationPolicy};
 use iblueconnect::vcard;
@@ -61,6 +61,7 @@ enum Message {
     Changed(u64),
     Lost(u64),
     Retry,
+    ModemChanged,
     ContactsPulled(Option<Vec<Entry>>, Option<Vec<PhoneCall>>),
 }
 
@@ -688,7 +689,16 @@ fn retry_delay(attempt: usize) -> Duration {
     Duration::from_secs([1, 2, 5, 10, 30][attempt.min(4)])
 }
 
+fn watch_modems(tx: Sender<Message>) {
+    let Ok(mut watch) = ModemWatch::system() else { eprintln!("oFono modem watch unavailable"); return };
+    while watch.next_change().is_ok() {
+        if tx.send(Message::ModemChanged).is_err() { break; }
+    }
+}
+
 fn run_worker(rx: Receiver<Message>, tx: Sender<Message>, session: Connection, lock_session: Connection) {
+    let modem_tx = tx.clone();
+    thread::spawn(move || watch_modems(modem_tx));
     let mut worker = Worker::new(tx, session, lock_session);
     let mut retry_attempt = 0usize;
     let _ = worker.refresh();
@@ -701,7 +711,8 @@ fn run_worker(rx: Receiver<Message>, tx: Sender<Message>, session: Connection, l
             Message::Lost(epoch) if worker.epoch.accepts(epoch) => {
                 worker.unavailable(); retry_attempt = 0; worker.changed();
             }
-            Message::Retry if worker.ofono.is_none() => {
+            // A reconnected phone is picked up at once; the back-off retry remains the fallback.
+            Message::Retry | Message::ModemChanged if worker.ofono.is_none() => {
                 if worker.refresh().is_ok() {
                     retry_attempt = 0;
                     worker.changed();

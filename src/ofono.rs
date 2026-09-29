@@ -88,6 +88,35 @@ impl OfonoEvents {
     }
 }
 
+/// Wakes when oFono adds a modem or a modem's state changes, e.g. the user reconnects the phone.
+pub struct ModemWatch(MessageIterator);
+
+impl ModemWatch {
+    pub fn system() -> Result<Self, OfonoError> {
+        Self::on(Connection::system()?)
+    }
+
+    pub fn on(connection: Connection) -> Result<Self, OfonoError> {
+        let rule = MatchRule::builder()
+            .msg_type(message::Type::Signal)
+            .sender("org.ofono")?
+            .build();
+        Ok(Self(MessageIterator::for_match_rule(rule, &connection, Some(64))?))
+    }
+
+    pub fn next_change(&mut self) -> Result<(), OfonoError> {
+        loop {
+            let message = self.0.next().ok_or(OfonoError::BackendUnavailable)??;
+            let header = message.header();
+            let (Some(interface), Some(member)) = (header.interface(), header.member()) else { continue };
+            if matches!((interface.as_str(), member.as_str()),
+                        ("org.ofono.Manager", "ModemAdded") | ("org.ofono.Modem", "PropertyChanged")) {
+                return Ok(());
+            }
+        }
+    }
+}
+
 impl OfonoBackend {
     pub fn connect() -> Result<Self, OfonoError> {
         Self::connect_on(Connection::system()?)
@@ -679,6 +708,28 @@ mod tests {
         server.emit_signal(None::<&str>, "/", "org.ofono.Manager", "ModemRemoved",
             &(OwnedObjectPath::try_from("/test_modem").unwrap(),)).unwrap();
         assert!(matches!(rx.recv_timeout(std::time::Duration::from_secs(1)), Ok(Err(OfonoError::BackendUnavailable))));
+    }
+
+    #[test]
+    fn a_phone_coming_online_wakes_the_modem_watch() {
+        let (_bus, address) = PrivateBus::start();
+        let server = Builder::address(address.as_str()).unwrap()
+            .name("org.ofono").unwrap()
+            .serve_at("/", MockManager).unwrap()
+            .build().unwrap();
+        let client = Builder::address(address.as_str()).unwrap().build().unwrap();
+        let mut watch = ModemWatch::on(client).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || loop {
+            if tx.send(watch.next_change()).is_err() { break; }
+        });
+        // Call activity is not a modem change.
+        server.emit_signal(None::<&str>, "/test_modem/call1", "org.ofono.VoiceCall", "PropertyChanged",
+            &("State", zbus::zvariant::Value::from("active"))).unwrap();
+        assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err());
+        server.emit_signal(None::<&str>, "/test_modem", "org.ofono.Modem", "PropertyChanged",
+            &("Online", zbus::zvariant::Value::from(true))).unwrap();
+        assert!(matches!(rx.recv_timeout(std::time::Duration::from_secs(1)), Ok(Ok(()))));
     }
 
     #[test]
