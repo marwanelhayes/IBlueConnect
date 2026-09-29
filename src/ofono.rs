@@ -195,6 +195,66 @@ impl OfonoBackend {
         Ok(path.to_string())
     }
 
+    pub fn hold(&self, call_id: &str) -> Result<(), OfonoError> {
+        self.swap_target(call_id, "active")
+    }
+
+    pub fn resume(&self, call_id: &str) -> Result<(), OfonoError> {
+        self.swap_target(call_id, "held")
+    }
+
+    pub fn add_call(&self, number: &str) -> Result<String, OfonoError> {
+        if !valid_number(number) {
+            return Err(OfonoError::InvalidNumber);
+        }
+        let calls = self.calls()?;
+        if calls.len() != 1 || calls[0].state != "active" || calls[0].multiparty {
+            return Err(OfonoError::StaleCall);
+        }
+        let path: OwnedObjectPath = self.call_manager()?.call("Dial", &(number, "default"))?;
+        Ok(path.to_string())
+    }
+
+    pub fn merge(&self) -> Result<(), OfonoError> {
+        let calls = self.calls()?;
+        if calls.len() != 2 || calls.iter().any(|call| call.multiparty)
+            || calls.iter().filter(|call| call.state == "active").count() != 1
+            || calls.iter().filter(|call| call.state == "held").count() != 1 {
+            return Err(OfonoError::StaleCall);
+        }
+        let _: Vec<OwnedObjectPath> = self.call_manager()?.call("CreateMultiparty", &())?;
+        Ok(())
+    }
+
+    pub fn end_conference(&self) -> Result<(), OfonoError> {
+        let calls = self.calls()?;
+        if calls.len() < 2 || calls.iter().any(|call| !call.multiparty || call.state != "active") {
+            return Err(OfonoError::StaleCall);
+        }
+        self.call_manager()?.call("HangupMultiparty", &()).map_err(Into::into)
+    }
+
+    pub fn end_call(&self, call_id: &str) -> Result<(), OfonoError> {
+        let calls = self.calls()?;
+        if calls.iter().any(|call| call.multiparty)
+            || !calls.iter().any(|call| call.path == call_id && matches!(call.state.as_str(), "active" | "held" | "dialing" | "alerting")) {
+            return Err(OfonoError::StaleCall);
+        }
+        let call = Proxy::new(&self.connection, "org.ofono", call_id, "org.ofono.VoiceCall")?;
+        call.call("Hangup", &()).map_err(Into::into)
+    }
+
+    fn swap_target(&self, call_id: &str, state: &str) -> Result<(), OfonoError> {
+        let calls = self.calls()?;
+        if calls.is_empty() || calls.len() > 2 || calls.iter().any(|call| call.multiparty)
+            || !calls.iter().any(|call| call.path == call_id && call.state == state)
+            || (calls.len() == 2 && (calls.iter().filter(|call| call.state == "active").count() != 1
+                || calls.iter().filter(|call| call.state == "held").count() != 1)) {
+            return Err(OfonoError::StaleCall);
+        }
+        self.call_manager()?.call("SwapCalls", &()).map_err(Into::into)
+    }
+
     pub fn send_tone(&self, call_id: &str, tone: char) -> Result<(), OfonoError> {
         if !valid_tone(tone) {
             return Err(OfonoError::InvalidTone);
@@ -372,6 +432,8 @@ mod tests {
     #[derive(Default)]
     struct MockState {
         call_state: Option<&'static str>,
+        second_state: Option<&'static str>,
+        multiparty: bool,
         commands: Vec<&'static str>,
     }
 
@@ -380,9 +442,31 @@ mod tests {
     #[zbus::interface(name = "org.ofono.VoiceCallManager")]
     impl MockCalls {
         fn get_calls(&self) -> Objects {
-            self.0.lock().unwrap().call_state.map_or_else(Vec::new, |state| {
-                vec![(OwnedObjectPath::try_from("/test_modem/call1").unwrap(), call_properties(state))]
-            })
+            let state = self.0.lock().unwrap();
+            let mut calls = state.call_state.map_or_else(Vec::new, |phase| {
+                let mut properties = call_properties(phase);
+                properties.insert("Multiparty".into(), OwnedValue::from(state.multiparty));
+                vec![(OwnedObjectPath::try_from("/test_modem/call1").unwrap(), properties)]
+            });
+            if let Some(phase) = state.second_state {
+                let mut properties = call_properties(phase);
+                properties.insert("Multiparty".into(), OwnedValue::from(state.multiparty));
+                calls.push((OwnedObjectPath::try_from("/test_modem/call2").unwrap(), properties));
+            }
+            calls
+        }
+
+        fn swap_calls(&self) {
+            self.0.lock().unwrap().commands.push("SwapCalls");
+        }
+
+        fn create_multiparty(&self) -> Vec<OwnedObjectPath> {
+            self.0.lock().unwrap().commands.push("CreateMultiparty");
+            vec![OwnedObjectPath::try_from("/test_modem/call1").unwrap(), OwnedObjectPath::try_from("/test_modem/call2").unwrap()]
+        }
+
+        fn hangup_multiparty(&self) {
+            self.0.lock().unwrap().commands.push("HangupMultiparty");
         }
 
         fn dial(&self, _number: &str, _hide_callerid: &str) -> OwnedObjectPath {
@@ -469,6 +553,114 @@ mod tests {
         server.emit_signal(None::<&str>, "/test_modem", "org.ofono.VoiceCallManager", "CallRemoved",
             &(path,)).unwrap();
         assert!(events.next_update().unwrap().is_empty());
+    }
+
+    #[test]
+    fn hold_and_resume_target_only_the_current_single_call() {
+        let (_bus, address) = PrivateBus::start();
+        let state = Arc::new(Mutex::new(MockState { call_state: Some("active"), ..Default::default() }));
+        let _server = Builder::address(address.as_str()).unwrap()
+            .name("org.ofono").unwrap()
+            .serve_at("/", MockManager).unwrap()
+            .serve_at("/test_modem", MockCalls(state.clone())).unwrap()
+            .build().unwrap();
+        let client = Builder::address(address.as_str()).unwrap().build().unwrap();
+        let backend = OfonoBackend::connect_on(client).unwrap();
+        assert_eq!(backend.hold("/test_modem/old"), Err(OfonoError::StaleCall));
+        backend.hold("/test_modem/call1").unwrap();
+        state.lock().unwrap().call_state = Some("held");
+        assert_eq!(backend.hold("/test_modem/call1"), Err(OfonoError::StaleCall));
+        backend.resume("/test_modem/call1").unwrap();
+        assert_eq!(state.lock().unwrap().commands, ["SwapCalls", "SwapCalls"]);
+    }
+
+    #[test]
+    fn active_and_held_calls_can_swap_by_target_id() {
+        let (_bus, address) = PrivateBus::start();
+        let state = Arc::new(Mutex::new(MockState { call_state: Some("held"), second_state: Some("active"), ..Default::default() }));
+        let _server = Builder::address(address.as_str()).unwrap()
+            .name("org.ofono").unwrap()
+            .serve_at("/", MockManager).unwrap()
+            .serve_at("/test_modem", MockCalls(state.clone())).unwrap()
+            .build().unwrap();
+        let client = Builder::address(address.as_str()).unwrap().build().unwrap();
+        let backend = OfonoBackend::connect_on(client).unwrap();
+        backend.resume("/test_modem/call1").unwrap();
+        backend.hold("/test_modem/call2").unwrap();
+        assert_eq!(backend.hold("/test_modem/call1"), Err(OfonoError::StaleCall));
+        assert_eq!(state.lock().unwrap().commands, ["SwapCalls", "SwapCalls"]);
+    }
+
+    #[test]
+    fn adding_a_call_requires_one_active_call_and_valid_number() {
+        let (_bus, address) = PrivateBus::start();
+        let state = Arc::new(Mutex::new(MockState { call_state: Some("active"), ..Default::default() }));
+        let _server = Builder::address(address.as_str()).unwrap()
+            .name("org.ofono").unwrap()
+            .serve_at("/", MockManager).unwrap()
+            .serve_at("/test_modem", MockCalls(state.clone())).unwrap()
+            .build().unwrap();
+        let client = Builder::address(address.as_str()).unwrap().build().unwrap();
+        let backend = OfonoBackend::connect_on(client).unwrap();
+        assert_eq!(backend.add_call("12 3"), Err(OfonoError::InvalidNumber));
+        backend.add_call("123").unwrap();
+        state.lock().unwrap().second_state = Some("waiting");
+        assert_eq!(backend.add_call("456"), Err(OfonoError::StaleCall));
+        assert_eq!(state.lock().unwrap().commands, ["Dial"]);
+    }
+
+    #[test]
+    fn merge_requires_one_active_and_one_held_call() {
+        let (_bus, address) = PrivateBus::start();
+        let state = Arc::new(Mutex::new(MockState { call_state: Some("active"), second_state: Some("waiting"), ..Default::default() }));
+        let _server = Builder::address(address.as_str()).unwrap()
+            .name("org.ofono").unwrap()
+            .serve_at("/", MockManager).unwrap()
+            .serve_at("/test_modem", MockCalls(state.clone())).unwrap()
+            .build().unwrap();
+        let client = Builder::address(address.as_str()).unwrap().build().unwrap();
+        let backend = OfonoBackend::connect_on(client).unwrap();
+        assert_eq!(backend.merge(), Err(OfonoError::StaleCall));
+        state.lock().unwrap().second_state = Some("held");
+        backend.merge().unwrap();
+        assert_eq!(state.lock().unwrap().commands, ["CreateMultiparty"]);
+    }
+
+    #[test]
+    fn conference_hangup_needs_confirmed_multiparty_calls() {
+        let (_bus, address) = PrivateBus::start();
+        let state = Arc::new(Mutex::new(MockState { call_state: Some("active"), second_state: Some("active"), ..Default::default() }));
+        let _server = Builder::address(address.as_str()).unwrap()
+            .name("org.ofono").unwrap()
+            .serve_at("/", MockManager).unwrap()
+            .serve_at("/test_modem", MockCalls(state.clone())).unwrap()
+            .build().unwrap();
+        let client = Builder::address(address.as_str()).unwrap().build().unwrap();
+        let backend = OfonoBackend::connect_on(client).unwrap();
+        assert_eq!(backend.end_conference(), Err(OfonoError::StaleCall));
+        state.lock().unwrap().multiparty = true;
+        backend.end_conference().unwrap();
+        assert_eq!(state.lock().unwrap().commands, ["HangupMultiparty"]);
+    }
+
+    #[test]
+    fn end_call_targets_only_a_current_nonconference_participant() {
+        let (_bus, address) = PrivateBus::start();
+        let state = Arc::new(Mutex::new(MockState { call_state: Some("held"), second_state: Some("dialing"), ..Default::default() }));
+        let _server = Builder::address(address.as_str()).unwrap()
+            .name("org.ofono").unwrap()
+            .serve_at("/", MockManager).unwrap()
+            .serve_at("/test_modem", MockCalls(state.clone())).unwrap()
+            .serve_at("/test_modem/call1", MockCall(state.clone())).unwrap()
+            .serve_at("/test_modem/call2", MockCall(state.clone())).unwrap()
+            .build().unwrap();
+        let client = Builder::address(address.as_str()).unwrap().build().unwrap();
+        let backend = OfonoBackend::connect_on(client).unwrap();
+        assert_eq!(backend.end_call("/test_modem/old"), Err(OfonoError::StaleCall));
+        backend.end_call("/test_modem/call2").unwrap();
+        state.lock().unwrap().multiparty = true;
+        assert_eq!(backend.end_call("/test_modem/call1"), Err(OfonoError::StaleCall));
+        assert_eq!(state.lock().unwrap().commands, ["Hangup"]);
     }
 
     #[test]

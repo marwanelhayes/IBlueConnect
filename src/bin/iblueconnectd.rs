@@ -1,8 +1,8 @@
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
-use iblueconnect::audio::{AudioRoute, observe_pipewire};
+use iblueconnect::audio::{AudioRoute, CallStreams, observe_call_streams, observe_pipewire, set_call_muted};
 use iblueconnect::backend::{Backend, Command, CommandError, RawCall};
 use iblueconnect::call::{AudioLocation, CallAction, CallPhase, Observation};
 use iblueconnect::call_log::{self, PhoneCall};
@@ -18,15 +18,27 @@ use zbus::blocking::{Connection, Proxy, connection::Builder};
 const PATH: &str = "/org/iblueconnect/Daemon";
 const IFACE: &str = "org.iblueconnect.Daemon";
 type Snapshot = (String, String, String, String, String);
+type SnapshotDetails = (String, String, String, String, String, String);
+type CallList = Vec<(String, String, String, String, String, bool)>;
 type ContactList = Vec<(String, String, String)>;
 type RecentList = Vec<(String, String, String, i64)>;
 const SYNC_FAILED: &str = "Contact sync failed — allow Sync Contacts for this laptop in the iPhone's Bluetooth settings";
 
 enum Operation {
     Snapshot,
+    SnapshotDetails,
+    Calls,
     Action(CallAction, String),
     Dial(String),
+    Hold(String),
+    Resume(String),
+    AddCall(String),
+    Merge,
+    EndCall(String),
+    EndConference,
     Tone(String, char),
+    CallAudio,
+    SetMuted(bool),
     Contacts,
     SyncContacts,
     Recents,
@@ -35,6 +47,9 @@ enum Operation {
 
 enum Reply {
     Snapshot(Snapshot),
+    SnapshotDetails(SnapshotDetails),
+    Calls(String, CallList),
+    CallAudio(u64, bool),
     Done(Result<(), String>),
     Contacts(String, ContactList),
     Recents(String, RecentList),
@@ -90,6 +105,31 @@ impl Service {
         }
     }
 
+    fn snapshot_details(&self) -> zbus::fdo::Result<SnapshotDetails> {
+        match self.request(Operation::SnapshotDetails)? {
+            Reply::SnapshotDetails(snapshot) => Ok(snapshot),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Current calls: (id, phase, audio, caller label, actual number, multiparty).
+    fn calls(&self) -> zbus::fdo::Result<(String, CallList)> {
+        match self.request(Operation::Calls)? {
+            Reply::Calls(status, list) => Ok((status, list)),
+            _ => unreachable!(),
+        }
+    }
+
+    /// The laptop-routed call's audio: (PipeWire serial of the phone's voice stream, outgoing mic muted).
+    fn call_audio(&self) -> zbus::fdo::Result<(u64, bool)> {
+        match self.request(Operation::CallAudio)? {
+            Reply::CallAudio(serial, muted) => Ok((serial, muted)),
+            Reply::Done(Err(message)) => Err(zbus::fdo::Error::Failed(message)),
+            _ => unreachable!(),
+        }
+    }
+    fn set_muted(&self, muted: bool) -> zbus::fdo::Result<()> { self.command(Operation::SetMuted(muted)) }
+
     fn contacts(&self) -> zbus::fdo::Result<(String, ContactList)> {
         match self.request(Operation::Contacts)? {
             Reply::Contacts(status, list) => Ok((status, list)),
@@ -125,6 +165,12 @@ impl Service {
     fn dial(&self, number: &str) -> zbus::fdo::Result<()> {
         self.command(Operation::Dial(number.into()))
     }
+    fn hold(&self, id: &str) -> zbus::fdo::Result<()> { self.command(Operation::Hold(id.into())) }
+    fn resume(&self, id: &str) -> zbus::fdo::Result<()> { self.command(Operation::Resume(id.into())) }
+    fn add_call(&self, number: &str) -> zbus::fdo::Result<()> { self.command(Operation::AddCall(number.into())) }
+    fn merge(&self) -> zbus::fdo::Result<()> { self.command(Operation::Merge) }
+    fn end_call(&self, id: &str) -> zbus::fdo::Result<()> { self.command(Operation::EndCall(id.into())) }
+    fn end_conference(&self) -> zbus::fdo::Result<()> { self.command(Operation::EndConference) }
     fn send_tone(&self, id: &str, tone: &str) -> zbus::fdo::Result<()> {
         let mut chars = tone.chars();
         let key = chars.next().filter(|_| chars.next().is_none())
@@ -142,8 +188,10 @@ struct Worker {
     lock_session: Connection,
     epoch: ListenerEpoch,
     calls: Vec<OfonoCall>,
+    multi_pending: Option<(Vec<OfonoCall>, Instant)>,
     presenter: Presenter,
     contacts: Contacts,
+    mute_checked: bool,
 }
 
 impl Worker {
@@ -152,10 +200,13 @@ impl Worker {
             Ok(history) => Some(history),
             Err(_) => { eprintln!("Call history unavailable"); None }
         });
-        Self { backend: Backend::new(), history, ofono: None, tx, session, lock_session, epoch: ListenerEpoch::default(), calls: Vec::new(), presenter: Presenter::new(), contacts: Contacts::open() }
+        Self { backend: Backend::new(), history, ofono: None, tx, session, lock_session, epoch: ListenerEpoch::default(), calls: Vec::new(), multi_pending: None, presenter: Presenter::new(), contacts: Contacts::open(), mute_checked: false }
     }
 
     fn reconcile(&mut self, calls: &[OfonoCall]) {
+        if self.multi_pending.as_ref().is_some_and(|(pending, started)| pending != calls || started.elapsed() >= Duration::from_secs(5)) {
+            self.multi_pending = None;
+        }
         let raw: Vec<_> = calls.iter().map(|call| RawCall {
             path: &call.path, state: &call.state, multiparty: call.multiparty,
         }).collect();
@@ -169,6 +220,7 @@ impl Worker {
         }
         if self.history_head() != before { self.recents_changed(); }
         self.calls = calls.to_vec();
+        if calls.is_empty() { self.mute_checked = false; } else { self.reset_mute(observe_call_streams().as_ref()); }
         self.present();
     }
 
@@ -183,11 +235,21 @@ impl Worker {
         for effect in effects { run_effect(&effect); }
     }
 
+    fn reset_mute(&mut self, streams: Option<&CallStreams>) {
+        let (checked, unmute) = mute_reset(self.mute_checked, streams);
+        self.mute_checked = checked;
+        if unmute && set_call_muted(streams.unwrap().capture_id, false).is_err() {
+            eprintln!("Call microphone mute could not be cleared");
+        }
+    }
+
     fn unavailable(&mut self) {
         self.epoch.invalidate();
         if let Some(history) = &mut self.history { history.backend_lost(SystemTime::now()); }
         self.ofono = None;
         self.calls.clear();
+        self.mute_checked = false;
+        self.multi_pending = None;
         self.backend.reconcile(false, &[], AudioLocation::Unknown);
         self.present();
     }
@@ -239,7 +301,45 @@ impl Worker {
                 .then(|| self.contacts.entries()).unwrap_or_default();
             return Reply::Snapshot(public_snapshot(refreshed.is_ok(), self.backend.observation(), &self.calls, &contacts));
         }
+        if let Operation::SnapshotDetails = operation {
+            let contacts = matches!(self.backend.observation(), Observation::Call(_))
+                .then(|| self.contacts.entries()).unwrap_or_default();
+            return Reply::SnapshotDetails(public_snapshot_details(refreshed.is_ok(), self.backend.observation(), &self.calls, &contacts));
+        }
+        if let Operation::Calls = operation {
+            return Reply::Calls(if refreshed.is_ok() { "ready" } else { "calling unavailable" }.into(),
+                if refreshed.is_ok() { public_calls(&self.calls, self.backend.observation(), &self.contacts.entries()) } else { Vec::new() });
+        }
         if let Err(message) = refreshed { return Reply::Done(Err(message)); }
+        if let Operation::CallAudio | Operation::SetMuted(_) = operation {
+            let streams = if self.calls.is_empty() { None } else { observe_call_streams() };
+            let Some(streams) = streams else { return Reply::Done(Err("Call audio is not on this laptop".into())) };
+            self.reset_mute(Some(&streams));
+            return match operation {
+                Operation::SetMuted(muted) => Reply::Done(set_call_muted(streams.capture_id, muted).map_err(|error| error.to_string())),
+                // Re-read: reset_mute may have just cleared a restored mute.
+                _ => Reply::CallAudio(streams.playback_serial, observe_call_streams().is_some_and(|now| now.muted)),
+            };
+        }
+        if self.multi_pending.is_some() || self.backend.has_pending_command() {
+            return Reply::Done(Err("Another call action is pending".into()));
+        }
+        if matches!(operation, Operation::Hold(_) | Operation::Resume(_) | Operation::AddCall(_) | Operation::Merge | Operation::EndCall(_) | Operation::EndConference) {
+            let ofono = self.ofono.as_ref().unwrap();
+            let result = match operation {
+                Operation::Hold(id) => ofono.hold(&id),
+                Operation::Resume(id) => ofono.resume(&id),
+                Operation::AddCall(number) => ofono.add_call(&number).map(|_| ()),
+                Operation::Merge => ofono.merge(),
+                Operation::EndCall(id) => ofono.end_call(&id),
+                Operation::EndConference => ofono.end_conference(),
+                _ => unreachable!(),
+            };
+            if result.is_ok() { self.multi_pending = Some((self.calls.clone(), Instant::now())); }
+            let reply = result.map_err(|error| error.to_string());
+            let _ = self.refresh();
+            return Reply::Done(reply);
+        }
         if let Err(message) = self.guard_operation(&operation) {
             return Reply::Done(Err(message.into()));
         }
@@ -247,7 +347,8 @@ impl Worker {
             Operation::Action(action, id) => self.backend.plan_action(action, &id),
             Operation::Dial(number) => self.backend.plan_dial(&number),
             Operation::Tone(id, tone) => self.backend.plan_tone(&id, tone),
-            Operation::Snapshot | Operation::Contacts | Operation::SyncContacts | Operation::Recents | Operation::BatteryStatus => unreachable!(),
+            Operation::Snapshot | Operation::SnapshotDetails | Operation::Calls | Operation::CallAudio | Operation::SetMuted(_) | Operation::Contacts | Operation::SyncContacts | Operation::Recents | Operation::BatteryStatus
+                | Operation::Hold(_) | Operation::Resume(_) | Operation::AddCall(_) | Operation::Merge | Operation::EndCall(_) | Operation::EndConference => unreachable!(),
         };
         let command = match command {
             Ok(command) => command,
@@ -537,6 +638,44 @@ fn public_snapshot(ready: bool, observed: &Observation, calls: &[OfonoCall], con
     (status.into(), id, phase.into(), audio.into(), caller_label(observed, calls, contacts))
 }
 
+fn public_snapshot_details(ready: bool, observed: &Observation, calls: &[OfonoCall], contacts: &[Entry]) -> SnapshotDetails {
+    let (status, id, phase, audio, caller) = public_snapshot(ready, observed, calls, contacts);
+    let number = calls.iter().find(|call| call.path == id)
+        .and_then(|call| call.number.as_deref()).unwrap_or("").to_owned();
+    (status, id, phase, audio, caller, number)
+}
+
+fn public_calls(calls: &[OfonoCall], observed: &Observation, contacts: &[Entry]) -> CallList {
+    calls.iter().map(|call| {
+        let audio = match observed {
+            Observation::Call(current) if current.id == call.path => match current.audio {
+                AudioLocation::Phone => "phone", AudioLocation::Laptop => "laptop",
+                AudioLocation::Switching => "switching", AudioLocation::Unknown => "unknown",
+            },
+            _ => "unknown",
+        };
+        let caller = call.name.as_deref().filter(|name| !name.is_empty())
+            .or_else(|| call.number.as_deref().and_then(|number| call_log::contact_name(number, contacts)))
+            .or(call.number.as_deref().filter(|number| !number.is_empty()))
+            .unwrap_or("Unknown caller");
+        let phase = match call.state.as_str() {
+            "disconnected" => "ending",
+            "incoming" | "dialing" | "alerting" | "active" | "held" | "waiting" => call.state.as_str(),
+            _ => "unavailable",
+        };
+        (call.path.clone(), phase.into(), audio.into(), caller.into(), call.number.clone().unwrap_or_default(), call.multiparty)
+    }).collect()
+}
+
+/// Clears a mute WirePlumber restored from an earlier call, once per call. Later mutes are the user's,
+/// and WirePlumber's restore keeps them across a phone/laptop handoff within the call.
+fn mute_reset(checked: bool, streams: Option<&CallStreams>) -> (bool, bool) {
+    match streams {
+        Some(streams) if !checked => (true, streams.muted),
+        _ => (checked, false),
+    }
+}
+
 fn next_message(rx: &Receiver<Message>, timeout: Duration) -> Option<Message> {
     match rx.recv_timeout(timeout) {
         Ok(message) => Some(message),
@@ -651,8 +790,8 @@ mod tests {
             let worker = Worker {
                 backend: Backend::new(), history: None, ofono: None, tx,
                 session,
-                lock_session, epoch: ListenerEpoch::default(), calls: Vec::new(), presenter: Presenter::new(),
-                contacts: Contacts { store: None, running: false, failed: false },
+                lock_session, epoch: ListenerEpoch::default(), calls: Vec::new(), multi_pending: None, presenter: Presenter::new(),
+                contacts: Contacts { store: None, running: false, failed: false }, mute_checked: false,
             };
             if let Some(Message::Request(Operation::Action(CallAction::Answer, _), reply)) = rx.recv().ok() {
                 let allowed = worker.guard_operation(&Operation::Action(CallAction::Answer, "test".into()));
@@ -725,6 +864,17 @@ mod tests {
     }
 
     #[test]
+    fn calls_preserve_each_participant_number_and_conference_state() {
+        let first = ofono_call(Some("111"), Some("Caller"));
+        let second = OfonoCall { path: "/modem0/voicecall02".into(), state: "held".into(),
+            multiparty: true, number: Some("222".into()), name: None };
+        assert_eq!(public_calls(&[first, second], &Observation::Unavailable, &[]), vec![
+            ("/modem0/voicecall01".into(), "incoming".into(), "unknown".into(), "Caller".into(), "111".into(), false),
+            ("/modem0/voicecall02".into(), "held".into(), "unknown".into(), "222".into(), "222".into(), true),
+        ]);
+    }
+
+    #[test]
     fn snapshot_reports_call_phase_route_and_caller_label() {
         let observed = Observation::Call(Call::new("/modem0/voicecall01", CallPhase::Incoming, AudioLocation::Phone));
         assert_eq!(public_snapshot(true, &observed, &[ofono_call(Some("123"), None)], &[]),
@@ -743,6 +893,16 @@ mod tests {
         contacts.finish(Some(vec![entry("Alice", "+20 100 123 4567"), entry("Other", "01001234567")]), None, 200);
         let observed = Observation::Call(Call::new("/modem0/voicecall01", CallPhase::Active, AudioLocation::Phone));
         assert_eq!(public_snapshot(true, &observed, &call, &contacts.entries()).4, "01001234567");
+    }
+
+    #[test]
+    fn snapshot_details_keeps_the_actual_call_number_with_a_contact_name() {
+        let observed = Observation::Call(Call::new("/modem0/voicecall01", CallPhase::Incoming, AudioLocation::Unknown));
+        let calls = [ofono_call(Some("222"), None)];
+        assert_eq!(public_snapshot_details(true, &observed, &calls,
+            &[entry("Person", "111"), entry("Person", "222")]).5, "222");
+        assert_eq!(public_snapshot_details(true, &observed, &[ofono_call(None, Some("Person"))], &[]).5, "");
+        assert_eq!(public_snapshot_details(true, &Observation::Idle, &calls, &[]).5, "");
     }
 
     #[test]
@@ -883,5 +1043,19 @@ mod tests {
         assert_eq!(route_location(&AudioRoute::default()), AudioLocation::Unknown);
         assert_eq!(route_location(&AudioRoute { playback: Some("output".into()), capture: None, laptop_verified: false }), AudioLocation::Unknown);
         assert_eq!(route_location(&AudioRoute { playback: Some("output".into()), capture: Some("input".into()), laptop_verified: true }), AudioLocation::Laptop);
+    }
+
+    #[test]
+    fn a_new_call_starts_unmuted_but_the_users_mute_holds_through_handoff() {
+        use iblueconnect::audio::CallStreams;
+        let stream = |serial, muted| CallStreams { playback_serial: 1, capture_id: 2, capture_serial: serial, muted };
+        // WirePlumber may restore the mute a previous call ended with: clear it once per call.
+        assert_eq!(mute_reset(false, Some(&stream(7, true))), (true, true));
+        assert_eq!(mute_reset(false, Some(&stream(7, false))), (true, false));
+        assert_eq!(mute_reset(true, Some(&stream(7, true))), (true, false));
+        // A phone/laptop handoff creates a new stream in the same call; the user's mute stays.
+        assert_eq!(mute_reset(true, Some(&stream(8, true))), (true, false));
+        // Audio still on the iPhone: check again once it reaches the laptop.
+        assert_eq!(mute_reset(false, None), (false, false));
     }
 }

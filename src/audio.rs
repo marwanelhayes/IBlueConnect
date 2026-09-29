@@ -12,12 +12,58 @@ pub struct AudioRoute {
 }
 
 pub fn observe_pipewire() -> io::Result<AudioRoute> {
+    parse_pipewire_snapshot(&pw_dump()?).map_err(|_| io::Error::other("PipeWire returned invalid graph data"))
+}
+
+/// The one phone call's HFP streams: the phone's voice (tapped for the level meter) and the laptop mic sent to the phone.
+#[derive(Debug, Eq, PartialEq)]
+pub struct CallStreams {
+    pub playback_serial: u64,
+    pub capture_id: u64,
+    pub capture_serial: u64,
+    pub muted: bool,
+}
+
+fn pw_dump() -> io::Result<String> {
     let output = Command::new("pw-dump").output()?;
     if !output.status.success() {
         return Err(io::Error::other("PipeWire snapshot unavailable"));
     }
-    let json = String::from_utf8(output.stdout).map_err(|_| io::Error::other("PipeWire returned invalid text"))?;
-    parse_pipewire_snapshot(&json).map_err(|_| io::Error::other("PipeWire returned invalid graph data"))
+    String::from_utf8(output.stdout).map_err(|_| io::Error::other("PipeWire returned invalid text"))
+}
+
+pub fn observe_call_streams() -> Option<CallStreams> {
+    parse_call_streams(&pw_dump().ok()?).ok().flatten()
+}
+
+pub fn parse_call_streams(json: &str) -> Result<Option<CallStreams>, serde_json::Error> {
+    let objects: Vec<Value> = serde_json::from_str(json)?;
+    let hfp = |class: &str| -> Vec<&Value> {
+        objects.iter().filter(|object| object["type"] == "PipeWire:Interface:Node"
+            && object["info"]["props"]["api.bluez5.profile"] == "headset-audio-gateway"
+            && object["info"]["props"]["media.class"] == class).collect()
+    };
+    let (playback, capture) = (hfp("Stream/Output/Audio"), hfp("Stream/Input/Audio"));
+    // Same rule as the route check: exactly one pair from one phone, otherwise the owner is ambiguous.
+    let ([playback], [capture]) = (playback.as_slice(), capture.as_slice()) else { return Ok(None) };
+    let device = |node: &Value| node["info"]["props"]["device.id"].as_u64();
+    if device(playback).is_none() || device(playback) != device(capture) {
+        return Ok(None);
+    }
+    let serial = |node: &Value| node["info"]["props"]["object.serial"].as_u64();
+    let (Some(playback_serial), Some(capture_id), Some(capture_serial)) =
+        (serial(playback), capture["id"].as_u64(), serial(capture)) else { return Ok(None) };
+    let muted = capture["info"]["params"]["Props"].as_array().into_iter().flatten()
+        .any(|props| props["mute"] == true);
+    Ok(Some(CallStreams { playback_serial, capture_id, capture_serial, muted }))
+}
+
+/// Mutes only the call's outgoing HFP stream; the Ubuntu microphone and the iPhone mic are untouched.
+pub fn set_call_muted(capture_id: u64, muted: bool) -> io::Result<()> {
+    let status = Command::new("wpctl")
+        .args(["set-mute", &capture_id.to_string(), if muted { "1" } else { "0" }])
+        .status()?;
+    if status.success() { Ok(()) } else { Err(io::Error::other("Call microphone could not be changed")) }
 }
 
 pub fn parse_pipewire_snapshot(json: &str) -> Result<AudioRoute, serde_json::Error> {
@@ -160,6 +206,21 @@ mod tests {
 
         let disconnected = filtered.replace("\"output-node-id\":4,\"input-node-id\":8", "\"output-node-id\":4,\"input-node-id\":3");
         assert!(!parse_pipewire_snapshot(&disconnected).unwrap().laptop_verified);
+    }
+
+    #[test]
+    fn call_streams_expose_voice_tap_and_outgoing_mute() {
+        let json = ROUTED
+            .replace("\"device.id\":99}}},\n      {\"id\":2", "\"device.id\":99,\"object.serial\":501}}},\n      {\"id\":2")
+            .replace("\"api.bluez5.profile\":\"headset-audio-gateway\",\"device.id\":99}}}",
+                     "\"api.bluez5.profile\":\"headset-audio-gateway\",\"device.id\":99,\"object.serial\":502},\"params\":{\"Props\":[{\"mute\":true}]}}}");
+        assert_eq!(parse_call_streams(&json).unwrap(),
+                   Some(CallStreams { playback_serial: 501, capture_id: 2, capture_serial: 502, muted: true }));
+        let unmuted = json.replace("\"mute\":true", "\"mute\":false");
+        assert!(!parse_call_streams(&unmuted).unwrap().unwrap().muted);
+        assert_eq!(parse_call_streams("[]").unwrap(), None);
+        let mixed = json.replacen("\"device.id\":99", "\"device.id\":100", 1);
+        assert_eq!(parse_call_streams(&mixed).unwrap(), None);
     }
 
     #[test]

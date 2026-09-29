@@ -21,7 +21,12 @@ typedef struct {
     GDBusProxy *daemon;
     LiveData *data;
     GVariant *pending_contacts;
+    LiveVoiceMeter *voice; /* Taps the phone's voice while a call's audio is on the laptop. */
+    bool audio_pending;
 } MockApp;
+
+static void activate(GApplication *application, gpointer data);
+static void load_snapshot(MockApp *app);
 
 /* A live app started for a call exits once the call is gone and no window needs it. */
 static void quit_when_unused(MockApp *app)
@@ -74,6 +79,12 @@ static void on_ignored_reply(GObject *source, GAsyncResult *result, gpointer dat
     (void)data;
 }
 
+static void on_call_reply(GObject *source, GAsyncResult *result, gpointer data)
+{
+    on_ignored_reply(source, result, data);
+    load_snapshot(data);
+}
+
 static void on_answer(GObject *source, GAsyncResult *result, gpointer data)
 {
     MockApp *app = data;
@@ -85,20 +96,95 @@ static void on_answer(GObject *source, GAsyncResult *result, gpointer data)
     }
 }
 
+static void on_voice(double level, gpointer data)
+{
+    MockApp *app = data;
+    if (level >= 0) {
+        if (app->popup) mock_call_popup_set_voice(app->popup, level);
+        return;
+    }
+    live_voice_meter_stop(app->voice); /* Audio left the laptop; the next tick asks again. */
+    app->voice = NULL;
+    app->model.call_audio = false;
+    if (app->popup) mock_call_popup_update(app->popup, &app->model);
+}
+
+static void on_call_audio(GObject *source, GAsyncResult *result, gpointer data)
+{
+    MockApp *app = data;
+    GError *error = NULL;
+    GVariant *value = g_dbus_proxy_call_finish(G_DBUS_PROXY(source), result, &error);
+    app->audio_pending = false;
+    if (error) g_error_free(error); /* Expected while the call's audio is on the iPhone. */
+    app->model.call_audio = value && app->model.call == MOCK_CALL_ACTIVE;
+    if (app->model.call_audio) {
+        guint64 serial;
+        gboolean muted;
+        g_variant_get(value, "(tb)", &serial, &muted);
+        app->model.muted = muted;
+        if (!app->voice) app->voice = live_voice_meter_start(serial, on_voice, app);
+    }
+    if (value) g_variant_unref(value);
+    if (app->popup) mock_call_popup_update(app->popup, &app->model);
+}
+
+/* Called from the 1 s tick and call changes, never from its own replies, so failures retry slowly.
+ * While a live call is active, keep the voice meter and real mute state; drop both when it ends. */
+static void follow_call_audio(MockApp *app)
+{
+    if (!app->model.live) return;
+    if (app->model.call != MOCK_CALL_ACTIVE) {
+        live_voice_meter_stop(app->voice);
+        app->voice = NULL;
+        app->model.call_audio = app->model.muted = false;
+    } else if (!app->voice && !app->audio_pending && app->daemon) {
+        app->audio_pending = true;
+        g_dbus_proxy_call(app->daemon, "CallAudio", NULL, G_DBUS_CALL_FLAGS_NO_AUTO_START, 3000,
+                          NULL, on_call_audio, app);
+    }
+}
+
+static void on_muted(GObject *source, GAsyncResult *result, gpointer data)
+{
+    MockApp *app = data;
+    GVariant *value = reply(source, result);
+    if (value) g_variant_unref(value);
+    live_voice_meter_stop(app->voice); /* The next tick re-reads the real mute state and restarts the tap. */
+    app->voice = NULL;
+}
+
+static void on_calls(GObject *source, GAsyncResult *result, gpointer data)
+{
+    MockApp *app = data;
+    GVariant *value = reply(source, result);
+    if (value) {
+        const char *status;
+        g_variant_get_child(value, 0, "&s", &status);
+        GVariant *rows = g_variant_get_child_value(value, 1);
+        live_apply_calls(&app->model, status, rows);
+        g_variant_unref(rows);
+        g_variant_unref(value);
+    } else {
+        live_apply_calls(&app->model, NULL, NULL);
+    }
+    follow_call_audio(app);
+    refresh(app);
+}
+
 static void on_snapshot(GObject *source, GAsyncResult *result, gpointer data)
 {
     MockApp *app = data;
     GVariant *value = reply(source, result);
     if (value) {
-        const char *status, *id, *phase, *audio, *caller;
-        g_variant_get(value, "(&s&s&s&s&s)", &status, &id, &phase, &audio, &caller);
-        live_apply_snapshot(&app->model, status, id, phase, caller);
+        const char *status, *id, *phase, *audio, *caller, *number;
+        g_variant_get(value, "(&s&s&s&s&s&s)", &status, &id, &phase, &audio, &caller, &number);
+        live_apply_snapshot(&app->model, status, id, phase, caller, number);
         g_variant_unref(value);
     } else {
-        live_apply_snapshot(&app->model, NULL, "", "idle", "");
+        live_apply_snapshot(&app->model, NULL, "", "idle", "", "");
     }
     app->snapshot_seen = true;
-    refresh(app);
+    call_daemon(app, "Calls", NULL, on_calls);
 }
 
 static void on_battery(GObject *source, GAsyncResult *result, gpointer data)
@@ -123,7 +209,7 @@ static void on_recents(GObject *source, GAsyncResult *result, gpointer data)
         GVariant *recent_rows = g_variant_get_child_value(value, 1);
         LiveData *old = app->data;
         app->data = live_load(contact_rows, recent_rows, g_get_real_time() / G_USEC_PER_SEC);
-        app->model.caller_index = mock_ui_contact_named(app->model.dialed_number);
+        app->model.caller_index = mock_ui_contact_named(app->model.caller_name);
         refresh(app);
         live_free(old); /* Widgets copied what they show; the old set is unused now. */
         g_variant_unref(contact_rows);
@@ -148,7 +234,7 @@ static void on_contacts(GObject *source, GAsyncResult *result, gpointer data)
 
 static void load_snapshot(MockApp *app)
 {
-    call_daemon(app, "Snapshot", NULL, on_snapshot);
+    call_daemon(app, "SnapshotDetails", NULL, on_snapshot);
     call_daemon(app, "BatteryStatus", NULL, on_battery);
 }
 
@@ -177,7 +263,7 @@ static void on_owner(GObject *proxy, GParamSpec *spec, gpointer data)
         load_snapshot(app);
         load_lists(app);
     } else {
-        live_apply_snapshot(&app->model, NULL, "", "idle", "");
+        live_apply_snapshot(&app->model, NULL, "", "idle", "", "");
         app->snapshot_seen = true;
         refresh(app);
     }
@@ -190,7 +276,7 @@ static void on_proxy(GObject *source, GAsyncResult *result, gpointer data)
     MockApp *app = data;
     app->daemon = g_dbus_proxy_new_for_bus_finish(result, NULL);
     if (!app->daemon) {
-        live_apply_snapshot(&app->model, NULL, "", "idle", "");
+        live_apply_snapshot(&app->model, NULL, "", "idle", "", "");
         app->snapshot_seen = true;
         refresh(app);
         return;
@@ -210,8 +296,19 @@ static void popup_action(const char *action, const char *argument, gpointer data
         else if (strcmp(action, "decline") == 0 && app->model.call == MOCK_CALL_INCOMING)
             call_daemon(app, "Decline", g_variant_new("(s)", id), on_ignored_reply);
         else if (strcmp(action, "end") == 0)
-            call_daemon(app, "HangUp", g_variant_new("(s)", id), on_ignored_reply);
-        else if (strcmp(action, "tone") == 0 && argument && app->model.call == MOCK_CALL_ACTIVE)
+            call_daemon(app, app->model.call_count > 1 || app->model.can_resume ? "EndCall" : "HangUp",
+                        g_variant_new("(s)", id), on_call_reply);
+        else if (strcmp(action, "hold") == 0 && app->model.can_hold)
+            call_daemon(app, "Hold", g_variant_new("(s)", id), on_call_reply);
+        else if (strcmp(action, "resume") == 0 && app->model.can_resume)
+            call_daemon(app, "Resume", g_variant_new("(s)", app->model.held_call_id), on_call_reply);
+        else if (strcmp(action, "merge") == 0 && app->model.can_merge)
+            call_daemon(app, "Merge", NULL, on_call_reply);
+        else if (strcmp(action, "end-conference") == 0 && app->model.can_end_conference)
+            call_daemon(app, "EndConference", NULL, on_call_reply);
+        else if (strcmp(action, "mute") == 0 && app->model.call_audio)
+            call_daemon(app, "SetMuted", g_variant_new("(b)", !app->model.muted), on_muted);
+        else if (strcmp(action, "tone") == 0 && argument && app->model.call == MOCK_CALL_ACTIVE && !app->model.call_held)
             call_daemon(app, "SendTone", g_variant_new("(ss)", id, argument), on_ignored_reply);
     }
     if (strcmp(action, "ignore") == 0)
@@ -220,7 +317,7 @@ static void popup_action(const char *action, const char *argument, gpointer data
         mock_ui_decline(&app->model);
     else if (strcmp(action, "answer") == 0)
         mock_ui_answer(&app->model);
-    else if (strcmp(action, "mute") == 0)
+    else if (strcmp(action, "mute") == 0 && (!app->model.live || app->model.call_audio))
         mock_ui_toggle_mute(&app->model);
     else if (strcmp(action, "audio") == 0 && argument)
         mock_ui_select_audio(&app->model, (size_t)strtoul(argument, NULL, 10));
@@ -230,6 +327,8 @@ static void popup_action(const char *action, const char *argument, gpointer data
         mock_ui_end_call(&app->model);
     else if (strcmp(action, "dismiss") == 0)
         app->model.popup_visible = false;
+    else if (strcmp(action, "open-app") == 0)
+        activate(G_APPLICATION(app->application), app);
     /* Keypad tones are visual mock interactions until a call backend exists. */
     refresh_popup(app);
 }
@@ -243,7 +342,8 @@ static void main_action(MockMainAction action, int contact_index,
             (size_t)contact_index < mock_contacts_count)
             value = mock_contacts[contact_index].numbers[0];
         if (action == MOCK_MAIN_CALL && value)
-            call_daemon(app, "Dial", g_variant_new("(s)", value), on_ignored_reply);
+            call_daemon(app, app->model.can_add_call ? "AddCall" : "Dial",
+                        g_variant_new("(s)", value), on_call_reply);
         else if (action == MOCK_MAIN_SYNC)
             call_daemon(app, "SyncContacts", NULL, on_ignored_reply);
         else if (action == MOCK_MAIN_RETRY)
@@ -283,6 +383,7 @@ static gboolean tick(gpointer data)
 {
     MockApp *app = data;
     mock_ui_tick(&app->model);
+    follow_call_audio(app);
     if (app->model.live) refresh_popup(app); /* Timers and banners only; lists change on signals. */
     else refresh(app);
     return G_SOURCE_CONTINUE;
@@ -476,6 +577,11 @@ static int self_test(void)
     app.main_window = NULL;
     refresh(&app);
     g_assert_true(gtk_widget_get_visible(GTK_WIDGET(same_window)));
+    app.activated = true;
+    popup_action("open-app", NULL, &app);
+    g_assert_nonnull(app.main_window);
+    g_assert_true(gtk_widget_get_visible(app.main_window));
+    g_assert_true(gtk_widget_get_visible(GTK_WIDGET(same_window)));
     mock_ui_tick(&app.model);
     g_assert_cmpuint(app.model.elapsed_seconds, ==, 1);
     popup_action("mute", NULL, &app);
@@ -545,6 +651,7 @@ int main(int argc, char **argv)
     gtk_application_set_accels_for_action(app.application, "app.quit", quit_accels);
     g_signal_connect(app.application, "activate", G_CALLBACK(activate), &app);
     int status = g_application_run(G_APPLICATION(app.application), 1, argv);
+    live_voice_meter_stop(app.voice);
     live_free(app.data);
     g_clear_object(&app.daemon);
     g_object_unref(app.application);

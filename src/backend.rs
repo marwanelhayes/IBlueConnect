@@ -66,6 +66,8 @@ impl Backend {
         &self.observation
     }
 
+    pub fn has_pending_command(&self) -> bool { self.pending.is_some() }
+
     pub fn update_audio(&mut self, audio: AudioLocation) -> bool {
         let Observation::Call(call) = &mut self.observation else { return false };
         if call.audio == audio { return false; }

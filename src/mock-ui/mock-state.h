@@ -51,13 +51,23 @@ typedef struct {
     bool popup_visible;
     bool compact;
     bool muted;
+    bool can_hold;
+    bool can_resume;
+    bool can_merge;
+    bool can_add_call;
+    bool can_end_conference;
+    bool call_held;
+    unsigned call_count;
     unsigned elapsed_seconds;
     size_t audio_index;
     int caller_index; /* -1 means unknown caller. */
     char dialed_number[64]; /* Used when dialing a number without a contact match. */
+    char caller_name[128]; /* Live SnapshotDetails label, retained across contact reloads. */
     char call_id[128]; /* Daemon call id in live mode. */
+    char held_call_id[128];
     char battery[48];
     char sync_label[160];
+    bool call_audio; /* Live: the daemon found this call's audio on the laptop, so Mute works. */
     bool live; /* Call phases come from the daemon; ticks only advance timers and banners. */
     bool contact_sync_error;
     bool calls_unavailable;

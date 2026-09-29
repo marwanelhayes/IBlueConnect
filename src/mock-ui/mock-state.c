@@ -156,7 +156,7 @@ void mock_ui_tick(MockUiModel *model)
         model->call = MOCK_CALL_CONNECTING;
     else if (model->call == MOCK_CALL_CONNECTING)
         model->call = MOCK_CALL_ACTIVE;
-    else if (model->call == MOCK_CALL_ACTIVE)
+    else if (model->call == MOCK_CALL_ACTIVE && !model->call_held)
         model->elapsed_seconds++;
     else if (model->call == MOCK_CALL_ENDING)
         model->call = MOCK_CALL_ENDED;
@@ -178,9 +178,14 @@ void mock_ui_finish_call(MockUiModel *model)
     model->call = MOCK_CALL_IDLE;
     model->popup_visible = false;
     model->muted = false;
+    model->can_hold = model->can_resume = model->can_merge = false;
+    model->can_add_call = model->can_end_conference = model->call_held = false;
+    model->call_count = 0;
+    model->held_call_id[0] = '\0';
     model->compact = false;
     model->caller_index = -1;
     model->dialed_number[0] = '\0';
+    model->caller_name[0] = '\0';
     model->elapsed_seconds = 0;
     model->call_id[0] = '\0';
 }

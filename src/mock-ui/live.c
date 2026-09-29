@@ -1,17 +1,19 @@
 #include "live.h"
+#include <math.h>
 
 #include <stdio.h>
 #include <string.h>
 
-static void set_caller(MockUiModel *model, const char *caller)
+static void set_caller(MockUiModel *model, const char *caller, const char *number)
 {
+    g_strlcpy(model->caller_name, caller ? caller : "", sizeof model->caller_name);
     int index = mock_ui_contact_named(caller);
     model->caller_index = index;
-    g_strlcpy(model->dialed_number, caller ? caller : "", sizeof model->dialed_number);
+    g_strlcpy(model->dialed_number, number ? number : "", sizeof model->dialed_number);
 }
 
 void live_apply_snapshot(MockUiModel *model, const char *status, const char *id,
-                         const char *phase, const char *caller)
+                         const char *phase, const char *caller, const char *number)
 {
     if (!status) model->connection = MOCK_CONNECTION_ERROR;
     else if (strcmp(status, "ready") == 0 || strcmp(status, "manage calls on phone") == 0)
@@ -19,6 +21,10 @@ void live_apply_snapshot(MockUiModel *model, const char *status, const char *id,
     else model->connection = MOCK_CONNECTION_DISCONNECTED;
     model->calls_unavailable = model->connection == MOCK_CONNECTION_CONNECTED &&
                                strcmp(status, "ready") != 0;
+    /* Connected but "unavailable": held or several calls the single-call snapshot can't describe.
+     * They have not ended; live_apply_calls() owns this state. */
+    if (model->connection == MOCK_CONNECTION_CONNECTED && strcmp(phase, "unavailable") == 0)
+        return;
     gboolean calling = model->connection == MOCK_CONNECTION_CONNECTED && id && *id &&
                        strcmp(phase, "ended") != 0 && strcmp(phase, "idle") != 0 &&
                        strcmp(phase, "unavailable") != 0;
@@ -33,8 +39,8 @@ void live_apply_snapshot(MockUiModel *model, const char *status, const char *id,
     if (strcmp(model->call_id, id) != 0) {
         mock_ui_finish_call(model);
         g_strlcpy(model->call_id, id, sizeof model->call_id);
-        set_caller(model, caller);
     }
+    set_caller(model, caller, number);
     MockCall call = model->call;
     if (strcmp(phase, "incoming") == 0) {
         if (call == MOCK_CALL_IDLE) {
@@ -59,6 +65,58 @@ void live_apply_snapshot(MockUiModel *model, const char *status, const char *id,
     } else if (strcmp(phase, "ending") == 0) {
         if (call == MOCK_CALL_ACTIVE || call == MOCK_CALL_OUTGOING || call == MOCK_CALL_CONNECTING)
             model->call = MOCK_CALL_ENDING;
+    }
+}
+
+void live_apply_calls(MockUiModel *model, const char *status, GVariant *rows)
+{
+    model->can_hold = model->can_resume = model->can_merge = false;
+    model->can_add_call = model->can_end_conference = false;
+    model->call_held = false;
+    model->call_count = 0;
+    model->held_call_id[0] = '\0';
+    if (!status || strcmp(status, "ready") != 0 || !rows) return;
+    model->calls_unavailable = false;
+
+    GVariantIter iter;
+    const char *id, *phase, *audio, *caller, *number;
+    const char *selected_id = NULL, *selected_phase = NULL, *selected_caller = NULL, *selected_number = NULL;
+    int selected_priority = -1;
+    guint active = 0, held = 0, multiparty = 0;
+    gboolean group;
+    g_variant_iter_init(&iter, rows);
+    while (g_variant_iter_next(&iter, "(&s&s&s&s&sb)", &id, &phase, &audio,
+                               &caller, &number, &group)) {
+        (void)audio;
+        model->call_count++;
+        active += strcmp(phase, "active") == 0;
+        held += strcmp(phase, "held") == 0;
+        multiparty += group;
+        if (strcmp(phase, "held") == 0)
+            g_strlcpy(model->held_call_id, id, sizeof model->held_call_id);
+        int priority = strcmp(phase, "active") == 0 ? 3 :
+                       strcmp(phase, "dialing") == 0 || strcmp(phase, "alerting") == 0 ? 2 :
+                       strcmp(phase, "held") == 0 ? 1 : 0;
+        if (priority > selected_priority) {
+            selected_priority = priority;
+            selected_id = id;
+            selected_phase = phase;
+            selected_caller = caller;
+            selected_number = number;
+        }
+    }
+    model->can_hold = model->call_count == 1 && active == 1 && !multiparty;
+    model->can_resume = (model->call_count == 1 && held == 1) ||
+                        (model->call_count == 2 && active == 1 && held == 1 && !multiparty);
+    model->can_merge = model->call_count == 2 && active == 1 && held == 1 && !multiparty;
+    model->can_add_call = model->can_hold;
+    model->can_end_conference = model->call_count >= 2 &&
+                                multiparty == model->call_count && active == model->call_count;
+    model->call_held = model->call_count == 1 && held == 1;
+    if ((model->call_count > 1 || held == 1) && selected_id) {
+        g_strlcpy(model->call_id, selected_id, sizeof model->call_id);
+        set_caller(model, selected_caller, selected_number);
+        model->call = strcmp(selected_phase, "dialing") == 0 ? MOCK_CALL_OUTGOING : MOCK_CALL_ACTIVE;
     }
 }
 
@@ -194,4 +252,78 @@ void live_apply_contacts_status(MockUiModel *model, const char *status)
 {
     g_strlcpy(model->sync_label, status ? status : "", sizeof model->sync_label);
     model->contact_sync_error = status && g_str_has_prefix(status, "Contact sync failed");
+}
+
+double live_voice_level(const gint16 *samples, size_t count)
+{
+    if (!count) return 0.0;
+    double sum = 0;
+    for (size_t i = 0; i < count; i++) sum += (double)samples[i] * samples[i];
+    double rms = sqrt(sum / count) / 32768.0;
+    if (rms <= 0) return 0.0;
+    /* ponytail: fixed -50..-10 dBFS window; add a calibration setting if real calls sit outside it. */
+    return CLAMP((20 * log10(rms) + 50) / 40, 0.0, 1.0);
+}
+
+struct LiveVoiceMeter {
+    GSubprocess *process;
+    GCancellable *cancel;
+    LiveVoiceFn fn; /* NULL once stopped. */
+    gpointer data;
+    bool reading; /* A read (or its callback) is in flight and will free a stopped meter. */
+    gint16 buffer[800]; /* 50 ms at 16 kHz. */
+};
+
+static void meter_free(LiveVoiceMeter *meter)
+{
+    g_subprocess_force_exit(meter->process);
+    g_object_unref(meter->process);
+    g_object_unref(meter->cancel);
+    g_free(meter);
+}
+
+static void meter_read(LiveVoiceMeter *meter);
+
+static void on_meter_read(GObject *source, GAsyncResult *result, gpointer data)
+{
+    LiveVoiceMeter *meter = data;
+    gssize bytes = g_input_stream_read_finish(G_INPUT_STREAM(source), result, NULL);
+    if (meter->fn) /* -1 tells the owner the stream ended, e.g. the audio moved to the iPhone. */
+        meter->fn(bytes > 0 ? live_voice_level(meter->buffer, (size_t)bytes / 2) : -1.0, meter->data);
+    meter->reading = false;
+    if (!meter->fn) meter_free(meter);
+    else if (bytes > 0) meter_read(meter); /* Otherwise the stream ended; stop() frees it. */
+}
+
+static void meter_read(LiveVoiceMeter *meter)
+{
+    meter->reading = true;
+    g_input_stream_read_async(g_subprocess_get_stdout_pipe(meter->process), meter->buffer,
+                              sizeof meter->buffer, G_PRIORITY_DEFAULT, meter->cancel, on_meter_read, meter);
+}
+
+LiveVoiceMeter *live_voice_meter_start(guint64 serial, LiveVoiceFn fn, gpointer data)
+{
+    char target[32];
+    g_snprintf(target, sizeof target, "%" G_GUINT64_FORMAT, serial);
+    GSubprocess *process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_SILENCE, NULL,
+        "pw-record", "--target", target, "--rate", "16000", "--channels", "1", "--format", "s16",
+        "--latency", "50ms", "-P",
+        "{ node.name=iblueconnect-voice-meter node.dont-reconnect=true state.restore-props=false }", "-", NULL);
+    if (!process) return NULL;
+    LiveVoiceMeter *meter = g_new0(LiveVoiceMeter, 1);
+    meter->process = process;
+    meter->cancel = g_cancellable_new();
+    meter->fn = fn;
+    meter->data = data;
+    meter_read(meter);
+    return meter;
+}
+
+void live_voice_meter_stop(LiveVoiceMeter *meter)
+{
+    if (!meter) return;
+    meter->fn = NULL;
+    if (meter->reading) g_cancellable_cancel(meter->cancel);
+    else meter_free(meter);
 }

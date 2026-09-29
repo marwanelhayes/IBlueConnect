@@ -63,7 +63,8 @@ static GtkWidget *empty_state(const char *icon, const char *title, const char *d
 
 static gboolean can_call(const MainView *self)
 {
-    return self->model->connection == MOCK_CONNECTION_CONNECTED && !self->model->calls_unavailable;
+    return self->model->connection == MOCK_CONNECTION_CONNECTED && !self->model->calls_unavailable &&
+           (!self->model->live || self->model->call_count == 0 || self->model->can_add_call);
 }
 
 static void emit(MainView *self, MockMainAction action, int index, const char *value)
@@ -864,5 +865,6 @@ void mock_main_window_update(GtkWidget *window)
     render_recents(self);
     render_contacts(self);
     render_detail(self);
+    gtk_button_set_label(GTK_BUTTON(self->dial_button), self->model->can_add_call ? "Add call" : "Call");
     dial_changed(GTK_EDITABLE(self->dial_entry), self);
 }
