@@ -1,0 +1,13 @@
+[Unit]
+Description=IBlueConnect calling daemon
+
+[Service]
+Type=dbus
+BusName=org.iblueconnect.Daemon
+ExecCondition=/usr/bin/test -f %h/.local/share/iblueconnect/setup-consent.json
+ExecStart=/usr/lib/iblueconnect/iblueconnectd
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

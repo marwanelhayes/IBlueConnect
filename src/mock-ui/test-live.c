@@ -151,6 +151,7 @@ static void incoming_contact_keeps_the_number_that_called(void)
     assert(strcmp(model.dialed_number, "333") == 0);
     live_apply_snapshot(&model, "ready", "/call1", "incoming", "Person", "");
     assert(model.dialed_number[0] == '\0');
+    mock_ui_set_data(NULL, 0, NULL, 0, NULL, 0); /* The borrowed contact fixture ends here. */
 }
 
 static void withheld_number_is_not_guessed(void)

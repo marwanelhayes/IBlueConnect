@@ -1,0 +1,422 @@
+{
+  "ubuntu_24_04": {
+    "method": "/proc/PID/smaps_rollup; five samples per scenario at two-second intervals",
+    "environment": "isolated Ubuntu container, private D-Bus and Xvfb, Cairo renderer, mock contacts/calls, no connected phone",
+    "scenarios": {
+      "background": [
+        {
+          "daemon": {
+            "rss_kib": 7232,
+            "pss_kib": 5436
+          },
+          "total": {
+            "rss_kib": 7232,
+            "pss_kib": 5436
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7232,
+            "pss_kib": 5436
+          },
+          "total": {
+            "rss_kib": 7232,
+            "pss_kib": 5436
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7232,
+            "pss_kib": 5436
+          },
+          "total": {
+            "rss_kib": 7232,
+            "pss_kib": 5436
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7232,
+            "pss_kib": 5436
+          },
+          "total": {
+            "rss_kib": 7232,
+            "pss_kib": 5436
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7232,
+            "pss_kib": 5436
+          },
+          "total": {
+            "rss_kib": 7232,
+            "pss_kib": 5436
+          }
+        }
+      ],
+      "main_window": [
+        {
+          "daemon": {
+            "rss_kib": 7232,
+            "pss_kib": 5325
+          },
+          "ui": {
+            "rss_kib": 118888,
+            "pss_kib": 97054
+          },
+          "total": {
+            "rss_kib": 126120,
+            "pss_kib": 102379
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7232,
+            "pss_kib": 5325
+          },
+          "ui": {
+            "rss_kib": 118888,
+            "pss_kib": 97054
+          },
+          "total": {
+            "rss_kib": 126120,
+            "pss_kib": 102379
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7232,
+            "pss_kib": 5325
+          },
+          "ui": {
+            "rss_kib": 118888,
+            "pss_kib": 97054
+          },
+          "total": {
+            "rss_kib": 126120,
+            "pss_kib": 102379
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7232,
+            "pss_kib": 5325
+          },
+          "ui": {
+            "rss_kib": 118888,
+            "pss_kib": 97054
+          },
+          "total": {
+            "rss_kib": 126120,
+            "pss_kib": 102379
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7232,
+            "pss_kib": 5325
+          },
+          "ui": {
+            "rss_kib": 118888,
+            "pss_kib": 97054
+          },
+          "total": {
+            "rss_kib": 126120,
+            "pss_kib": 102379
+          }
+        }
+      ],
+      "call_controller": [
+        {
+          "daemon": {
+            "rss_kib": 7232,
+            "pss_kib": 5333
+          },
+          "ui": {
+            "rss_kib": 105420,
+            "pss_kib": 83966
+          },
+          "total": {
+            "rss_kib": 112652,
+            "pss_kib": 89299
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7232,
+            "pss_kib": 5333
+          },
+          "ui": {
+            "rss_kib": 105420,
+            "pss_kib": 83966
+          },
+          "total": {
+            "rss_kib": 112652,
+            "pss_kib": 89299
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7232,
+            "pss_kib": 5333
+          },
+          "ui": {
+            "rss_kib": 105420,
+            "pss_kib": 83966
+          },
+          "total": {
+            "rss_kib": 112652,
+            "pss_kib": 89299
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7232,
+            "pss_kib": 5333
+          },
+          "ui": {
+            "rss_kib": 105420,
+            "pss_kib": 83966
+          },
+          "total": {
+            "rss_kib": 112652,
+            "pss_kib": 89299
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7232,
+            "pss_kib": 5333
+          },
+          "ui": {
+            "rss_kib": 105420,
+            "pss_kib": 83966
+          },
+          "total": {
+            "rss_kib": 112652,
+            "pss_kib": 89299
+          }
+        }
+      ]
+    }
+  },
+  "ubuntu_26_04": {
+    "method": "/proc/PID/smaps_rollup; five samples per scenario at two-second intervals",
+    "environment": "isolated Ubuntu container, private D-Bus and Xvfb, Cairo renderer, mock contacts/calls, no connected phone",
+    "scenarios": {
+      "background": [
+        {
+          "daemon": {
+            "rss_kib": 7388,
+            "pss_kib": 5432
+          },
+          "total": {
+            "rss_kib": 7388,
+            "pss_kib": 5432
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7388,
+            "pss_kib": 5432
+          },
+          "total": {
+            "rss_kib": 7388,
+            "pss_kib": 5432
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7388,
+            "pss_kib": 5432
+          },
+          "total": {
+            "rss_kib": 7388,
+            "pss_kib": 5432
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7388,
+            "pss_kib": 5432
+          },
+          "total": {
+            "rss_kib": 7388,
+            "pss_kib": 5432
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7388,
+            "pss_kib": 5432
+          },
+          "total": {
+            "rss_kib": 7388,
+            "pss_kib": 5432
+          }
+        }
+      ],
+      "main_window": [
+        {
+          "daemon": {
+            "rss_kib": 7388,
+            "pss_kib": 5357
+          },
+          "ui": {
+            "rss_kib": 139096,
+            "pss_kib": 111959
+          },
+          "total": {
+            "rss_kib": 146484,
+            "pss_kib": 117316
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7388,
+            "pss_kib": 5357
+          },
+          "ui": {
+            "rss_kib": 139096,
+            "pss_kib": 111959
+          },
+          "total": {
+            "rss_kib": 146484,
+            "pss_kib": 117316
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7388,
+            "pss_kib": 5357
+          },
+          "ui": {
+            "rss_kib": 139096,
+            "pss_kib": 111959
+          },
+          "total": {
+            "rss_kib": 146484,
+            "pss_kib": 117316
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7388,
+            "pss_kib": 5357
+          },
+          "ui": {
+            "rss_kib": 139096,
+            "pss_kib": 111959
+          },
+          "total": {
+            "rss_kib": 146484,
+            "pss_kib": 117316
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7388,
+            "pss_kib": 5357
+          },
+          "ui": {
+            "rss_kib": 139096,
+            "pss_kib": 111959
+          },
+          "total": {
+            "rss_kib": 146484,
+            "pss_kib": 117316
+          }
+        }
+      ],
+      "call_controller": [
+        {
+          "daemon": {
+            "rss_kib": 7388,
+            "pss_kib": 5357
+          },
+          "ui": {
+            "rss_kib": 124664,
+            "pss_kib": 97777
+          },
+          "total": {
+            "rss_kib": 132052,
+            "pss_kib": 103134
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7388,
+            "pss_kib": 5357
+          },
+          "ui": {
+            "rss_kib": 124664,
+            "pss_kib": 97777
+          },
+          "total": {
+            "rss_kib": 132052,
+            "pss_kib": 103134
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7388,
+            "pss_kib": 5357
+          },
+          "ui": {
+            "rss_kib": 124664,
+            "pss_kib": 97777
+          },
+          "total": {
+            "rss_kib": 132052,
+            "pss_kib": 103134
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7388,
+            "pss_kib": 5357
+          },
+          "ui": {
+            "rss_kib": 124664,
+            "pss_kib": 97777
+          },
+          "total": {
+            "rss_kib": 132052,
+            "pss_kib": 103134
+          }
+        },
+        {
+          "daemon": {
+            "rss_kib": 7388,
+            "pss_kib": 5357
+          },
+          "ui": {
+            "rss_kib": 124664,
+            "pss_kib": 97777
+          },
+          "total": {
+            "rss_kib": 132052,
+            "pss_kib": 103134
+          }
+        }
+      ]
+    }
+  },
+  "current_upgraded_laptop_idle": {
+    "method": "six samples at two-second intervals; ofono separately read as root",
+    "environment": "Ubuntu 26.04.1, UI closed, idle call, retained oFono 1.31",
+    "daemon": {
+      "pss_kib": 8719,
+      "rss_kib": 12364
+    },
+    "rnnoise_service": {
+      "pss_kib": 9006,
+      "rss_kib": 16024
+    },
+    "ofono": {
+      "pss_kib": 2573,
+      "rss_kib": 6636
+    }
+  }
+}

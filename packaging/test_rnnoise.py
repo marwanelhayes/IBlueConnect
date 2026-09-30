@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -10,6 +11,28 @@ SCRIPT = Path(__file__).with_name("rnnoise.sh")
 
 
 class RnnoiseScriptTest(unittest.TestCase):
+    def test_print_config_escapes_plugin_path_without_services_or_backend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            commands = root / 'bin'
+            commands.mkdir()
+            log = root / 'actions.log'
+            for name in ('busctl', 'pw-dump', 'systemctl', 'install', 'mkdir'):
+                command = commands / name
+                command.write_text('#!/bin/sh\nprintf invoked >> "$TEST_LOG"\nexit 1\n')
+                command.chmod(0o755)
+            env = os.environ | {'HOME': tmp, 'PATH': f"{commands}:{os.environ['PATH']}", 'TEST_LOG': str(log)}
+            plugin = '/opt/IBlue "quoted"/plugin\\name\nline.so'
+            result = subprocess.run(['sh', str(SCRIPT), '--print-config', plugin], env=env, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            encoded = re.search(r'plugin = (.*)\n', result.stdout.decode()).group(1)
+            self.assertEqual(json.loads(encoded), plugin)
+            self.assertFalse(log.exists())
+            self.assertFalse((root / '.config').exists())
+            invalid = subprocess.run(['sh', str(SCRIPT), '--print-config', 'relative.so'], env=env, capture_output=True)
+            self.assertNotEqual(invalid.returncode, 0)
+            self.assertFalse(log.exists())
+
     def test_enable_rollback_and_call_guards(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -88,6 +111,9 @@ fi
             self.assertIn('node.name = "echo-cancel-source"', config.read_text())
             self.assertIn('audio.position = [ MONO ]', config.read_text())
             status("active")
+            printed = run('--print-config', str(installed))
+            self.assertEqual(printed.returncode, 0, printed.stderr.decode())
+            self.assertEqual(printed.stdout, config.read_bytes())
             self.assertNotEqual(run("rollback").returncode, 0)
             self.assertTrue(config.exists())
             status("idle")

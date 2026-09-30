@@ -8,11 +8,11 @@ cc -std=c11 -Wall -Wextra -Werror \
     "$root/src/mock-ui/test-mock-state.c" "$root/src/mock-ui/mock-state.c" \
     -o "$root/target/test-mock-state"
 "$root/target/test-mock-state"
-cc -std=c11 -Wall -Wextra -Werror \
+cc -std=c11 -Wall -Wextra -Werror -Wno-error=deprecated-declarations \
     "$root/src/mock-ui/test-main-view.c" "$root/src/mock-ui/main-view.c" \
     "$root/src/mock-ui/mock-state.c" -o "$root/target/test-main-view" \
     $(pkg-config --cflags --libs gtk4 libadwaita-1)
-cc -std=c11 -Wall -Wextra -Werror \
+cc -std=c11 -Wall -Wextra -Werror -Wno-error=deprecated-declarations \
     "$root/src/mock-ui/test-call-popup.c" "$root/src/mock-ui/call-popup.c" \
     "$root/src/mock-ui/mock-state.c" -o "$root/target/test-call-popup" \
     $(pkg-config --cflags --libs gtk4 gtk4-x11 libadwaita-1 x11)

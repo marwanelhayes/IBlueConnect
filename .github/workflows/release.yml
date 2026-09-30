@@ -1,0 +1,63 @@
+name: Ubuntu packages
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ['24.04', '26.04']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build target environment
+        run: docker build --build-arg UBUNTU_VERSION=${{ matrix.ubuntu }} -f packaging/release.Dockerfile -t iblueconnect-build:${{ matrix.ubuntu }} packaging
+      - name: Build and test installer
+        run: |
+          docker run --rm -v "$PWD:/build" iblueconnect-build:${{ matrix.ubuntu }} sh -c '
+            set -eu
+            curl -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh
+            sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain 1.98.1
+            export PATH="/root/.cargo/bin:$PATH"
+            sh packaging/build-release.sh "$1"
+            apt-get install -y --no-install-recommends ./target/releases/iblueconnect_*_amd64.deb
+            dbus-run-session xvfb-run -a .venv/bin/python -B packaging/measure-memory.py \
+              /usr/lib/iblueconnect/iblueconnectd /usr/lib/iblueconnect/iblueconnect \
+              "target/releases/ram-ubuntu-$1.json"
+          ' sh '${{ matrix.ubuntu }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-${{ matrix.ubuntu }}-amd64
+          path: |
+            target/releases/*.deb
+            target/releases/ubuntu-*.json
+            target/releases/ram-ubuntu-*.json
+            target/releases/noise-suppression-for-voice-v1.10.tar.gz
+          if-no-files-found: error
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ubuntu-*-amd64
+          merge-multiple: true
+          path: target/releases
+      - name: Publish preview installers and corresponding plugin source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd target/releases
+          sha256sum *.deb *.tar.gz > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --prerelease --title "IBlueConnect $GITHUB_REF_NAME" \
+            --notes-file ../../packaging/RELEASE_NOTES.md \
+            ./*.deb ./ubuntu-*.json ./ram-ubuntu-*.json ./noise-suppression-for-voice-v1.10.tar.gz ./SHA256SUMS

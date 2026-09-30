@@ -35,23 +35,9 @@ filter_ready() {
     ' >/dev/null 2>&1
 }
 
-case ${1:-} in
-    enable)
-        [ "$#" -eq 2 ] || fail 'Usage: rnnoise.sh enable /path/to/librnnoise_ladspa.so'
-        [ -s "$2" ] || fail 'RNNoise LADSPA plugin is missing.'
-        [ ! -e "$conf" ] && [ ! -e "$plugin" ] || fail 'RNNoise is already installed; roll it back first.'
-        systemctl --user is-enabled --quiet filter-chain.service >/dev/null 2>&1 ||
-            fail 'Enable the user filter-chain service first: systemctl --user enable filter-chain.service'
-        safe_to_restart
-        printf '%s\n' "$graph" | jq -e '[.[] | select(.type == "PipeWire:Interface:Node" and
-            .info.props."node.name" == "echo-cancel-source")] | length > 0' >/dev/null &&
-            fail 'A temporary noise filter is still running; stop it first.'
-        mkdir -p "$(dirname "$conf")" "$(dirname "$plugin")"
-        cleanup_pending=1
-        trap 'if [ "$cleanup_pending" -eq 1 ]; then rm -f "$conf" "$plugin"; fi' EXIT
-        install -m 755 "$2" "$plugin"
-        plugin_json=$(jq -n --arg path "$plugin" '$path')
-        cat > "$conf" <<EOF
+print_config() {
+    plugin_json=$(jq -n --arg path "$1" '$path')
+    cat <<EOF
 # IBlueConnect RNNoise; remove with packaging/rnnoise.sh rollback.
 context.modules = [
   { name = libpipewire-module-filter-chain
@@ -79,6 +65,29 @@ context.modules = [
   }
 ]
 EOF
+}
+
+case ${1:-} in
+    --print-config)
+        [ "$#" -eq 2 ] || fail 'Usage: rnnoise.sh --print-config /absolute/path/to/librnnoise_ladspa.so'
+        case "$2" in /*) ;; *) fail 'Plugin path must be absolute.' ;; esac
+        print_config "$2"
+        ;;
+    enable)
+        [ "$#" -eq 2 ] || fail 'Usage: rnnoise.sh enable /path/to/librnnoise_ladspa.so'
+        [ -s "$2" ] || fail 'RNNoise LADSPA plugin is missing.'
+        [ ! -e "$conf" ] && [ ! -e "$plugin" ] || fail 'RNNoise is already installed; roll it back first.'
+        systemctl --user is-enabled --quiet filter-chain.service >/dev/null 2>&1 ||
+            fail 'Enable the user filter-chain service first: systemctl --user enable filter-chain.service'
+        safe_to_restart
+        printf '%s\n' "$graph" | jq -e '[.[] | select(.type == "PipeWire:Interface:Node" and
+            .info.props."node.name" == "echo-cancel-source")] | length > 0' >/dev/null &&
+            fail 'A temporary noise filter is still running; stop it first.'
+        mkdir -p "$(dirname "$conf")" "$(dirname "$plugin")"
+        cleanup_pending=1
+        trap 'if [ "$cleanup_pending" -eq 1 ]; then rm -f "$conf" "$plugin"; fi' EXIT
+        install -m 755 "$2" "$plugin"
+        print_config "$plugin" > "$conf"
         safe_to_restart
         if ! systemctl --user restart filter-chain.service >/dev/null 2>&1; then
             rm -f "$conf" "$plugin"
@@ -114,5 +123,5 @@ EOF
         rm -f "$backup" "$plugin"
         echo 'RNNoise removed; oFono unchanged.'
         ;;
-    *) fail 'Usage: rnnoise.sh enable /path/to/librnnoise_ladspa.so | rollback' ;;
+    *) fail 'Usage: rnnoise.sh enable /path/to/librnnoise_ladspa.so | rollback | --print-config /absolute/path/to/librnnoise_ladspa.so' ;;
 esac

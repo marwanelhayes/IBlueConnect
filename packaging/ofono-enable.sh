@@ -25,27 +25,16 @@ legacy="$HOME/.config/wireplumber/bluetooth.lua.d/51-iblueconnect-ofono.lua"
 modern="$HOME/.config/wireplumber/wireplumber.conf.d/51-iblueconnect-ofono.conf"
 version=$(wireplumber --version | sed -n 's/.*wireplumber \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1)
 case "$version" in
-    0.4.*) conf="$legacy" ;;
-    0.[5-9].*|0.[1-9][0-9]*.*|[1-9]*.*) conf="$modern" ;;
+    0.4.*) conf="$legacy"; obsolete="$modern" ;;
+    0.[5-9].*|0.[1-9][0-9]*.*|[1-9]*.*) conf="$modern"; obsolete="$legacy" ;;
     *) echo 'Unsupported WirePlumber version.' >&2; exit 1 ;;
 esac
 
-safe_to_restart
-
-if [ "$(dpkg-query -W -f='${Status}' ofono 2>/dev/null || true)" != 'install ok installed' ]; then
-    safe_to_restart
-    sudo apt-get install -y ofono
-fi
-# The package also starts dundee (dial-up networking), which IBlueConnect does not use.
-safe_to_restart
-sudo systemctl disable --now dundee.service
-
-mkdir -p "$(dirname "$conf")"
+print_config() {
 if [ "$conf" = "$legacy" ]; then
-    obsolete="$modern"
     printf '%s\n' '-- IBlueConnect: oFono owns HFP calls. Remove this file to restore the native backend.' \
-        'bluez_monitor.properties["bluez5.hfphsp-backend"] = "ofono"' > "$conf"
-    cat >> "$conf" <<'EOF'
+        'bluez_monitor.properties["bluez5.hfphsp-backend"] = "ofono"'
+    cat <<'EOF'
 -- Use RNNoise only for outgoing phone audio; a missing filter falls back to the usual mic.
 table.insert(bluez_monitor.rules, {
   matches = {
@@ -60,10 +49,9 @@ table.insert(bluez_monitor.rules, {
 })
 EOF
 else
-    obsolete="$legacy"
     printf '%s\n' '# IBlueConnect: oFono owns HFP calls. Remove this file to restore the native backend.' \
-        'monitor.bluez.properties = {' '  bluez5.hfphsp-backend = "ofono"' '}' > "$conf"
-    cat >> "$conf" <<'EOF'
+        'monitor.bluez.properties = {' '  bluez5.hfphsp-backend = "ofono"' '}'
+    cat <<'EOF'
 # Use RNNoise only for outgoing phone audio; a missing filter falls back to the usual mic.
 monitor.bluez.rules = [
   {
@@ -82,6 +70,30 @@ monitor.bluez.rules = [
 ]
 EOF
 fi
+}
+
+case ${1:-} in
+    --print-config)
+        [ "$#" -eq 1 ] || fail "Usage: ofono-enable.sh [--print-config]"
+        print_config
+        exit 0
+        ;;
+    "") [ "$#" -eq 0 ] || fail "Usage: ofono-enable.sh [--print-config]" ;;
+    *) fail "Usage: ofono-enable.sh [--print-config]" ;;
+esac
+
+safe_to_restart
+
+if [ "$(dpkg-query -W -f='${Status}' ofono 2>/dev/null || true)" != 'install ok installed' ]; then
+    safe_to_restart
+    sudo apt-get install -y ofono
+fi
+# The package also starts dundee (dial-up networking), which IBlueConnect does not use.
+safe_to_restart
+sudo systemctl disable --now dundee.service
+
+mkdir -p "$(dirname "$conf")"
+print_config > "$conf"
 if [ -f "$obsolete" ] && head -n 1 "$obsolete" | grep -Eq \
     '^(--|#) IBlueConnect: oFono owns HFP calls\. Remove this file to restore the native backend\.$'; then
     rm -f "$obsolete"

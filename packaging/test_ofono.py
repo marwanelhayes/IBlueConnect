@@ -28,8 +28,8 @@ class OfonoScriptsTest(unittest.TestCase):
             'systemctl': '#!/bin/sh\nprintf "systemctl %s\\n" "$*" >> "$TEST_LOG"\nif [ "$*" = "--user restart wireplumber" ] && [ -f "$TEST_NEXT_SNAPSHOT" ]; then cp "$TEST_NEXT_SNAPSHOT" "$TEST_SNAPSHOT"; fi\nif [ "$*" = "--user stop iblueconnectd.service" ]; then rm -f "$TEST_SNAPSHOT"; fi\n',
             'dpkg-query': '#!/bin/sh\nprintf "install ok installed\\n"\n',
             'wireplumber': '#!/bin/sh\nprintf "wireplumber\\nCompiled with libwireplumber %s\\nLinked with libwireplumber %s\\n" "$TEST_VERSION" "$TEST_VERSION"\n',
-            'busctl': '#!/bin/sh\nexec /bin/cat "$TEST_SNAPSHOT"\n',
-            'pw-dump': '#!/bin/sh\nexec /bin/cat "$TEST_GRAPH"\n',
+            'busctl': '#!/bin/sh\nprintf "busctl\\n" >> "$TEST_QUERY_LOG"\nexec /bin/cat "$TEST_SNAPSHOT"\n',
+            'pw-dump': '#!/bin/sh\nprintf "pw-dump\\n" >> "$TEST_QUERY_LOG"\nexec /bin/cat "$TEST_GRAPH"\n',
         }
         for name, content in scripts.items():
             command = commands / name
@@ -44,6 +44,7 @@ class OfonoScriptsTest(unittest.TestCase):
             'HOME': self.tmp.name, 'PATH': f"{commands}:{os.environ['PATH']}",
             'TEST_VERSION': '0.5.13', 'TEST_SNAPSHOT': str(self.snapshot),
             'TEST_GRAPH': str(self.graph), 'TEST_LOG': str(self.log),
+            'TEST_QUERY_LOG': str(self.root / 'queries.log'),
             'TEST_NEXT_SNAPSHOT': str(self.root / 'next-snapshot.json'),
         }
 
@@ -55,8 +56,34 @@ class OfonoScriptsTest(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
 
-    def run_script(self, name):
-        return subprocess.run(['sh', str(PACKAGING / name)], env=self.env, capture_output=True)
+    def run_script(self, name, *args):
+        return subprocess.run(['sh', str(PACKAGING / name), *args], env=self.env, capture_output=True)
+
+    def test_print_config_is_identical_and_needs_no_call_or_audio_state(self):
+        for version, config in (('0.4.17', LEGACY), ('0.5.13', MODERN)):
+            with self.subTest(version=version):
+                self.env['TEST_VERSION'] = version
+                self.status('idle')
+                self.graph.write_text('[]')
+                self.assertEqual(self.run_script('ofono-enable.sh').returncode, 0)
+                expected = (self.root / config).read_bytes()
+                (self.root / config).unlink()
+                self.log.unlink()
+                queries = Path(self.env['TEST_QUERY_LOG'])
+                queries.unlink()
+                # Both active and missing state must allow offline generation.
+                for phase in ('active', None):
+                    if phase:
+                        self.status(phase)
+                    else:
+                        self.snapshot.unlink()
+                    self.graph.unlink(missing_ok=True)
+                    result = self.run_script('ofono-enable.sh', '--print-config')
+                    self.assertEqual(result.returncode, 0, result.stderr.decode())
+                    self.assertEqual(result.stdout, expected)
+                    self.assertFalse(self.log.exists())
+                    self.assertFalse(queries.exists(), 'Printer must not query desktop services')
+                    self.assertFalse((self.root / config).exists())
 
     def test_upgrade_selects_ofono_in_modern_configuration(self):
         self.write_legacy()
