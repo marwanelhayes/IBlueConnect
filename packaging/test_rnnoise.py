@@ -46,11 +46,11 @@ fi
                 {"id": 2, "type": "PipeWire:Interface:Node", "info": {"props": {"node.name": "iblueconnect-rnnoise-capture"}}},
                 {"id": 3, "type": "PipeWire:Interface:Node", "info": {"props": {"node.name": "wired-mic", "media.class": "Audio/Source"}}},
                 {"type": "PipeWire:Interface:Metadata", "props": {"metadata.name": "default"}, "metadata": [
-                    {"key": "default.audio.source", "value": {"name": "echo-cancel-source"}}]},
+                    {"key": "default.audio.source", "value": {"name": "wired-mic"}}]},
                 {"type": "PipeWire:Interface:Link", "info": {"output-node-id": 3, "input-node-id": 2, "state": "paused"}},
             ]))
             bad = json.loads(loaded_graph.read_text())
-            bad[3]["metadata"][0]["value"]["name"] = "wired-mic"
+            bad.pop()  # A loaded filter without its physical microphone link is unusable.
             bad_graph.write_text(json.dumps(bad))
             env = os.environ | {
                 "HOME": tmp, "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -80,7 +80,9 @@ fi
             graph.write_text(json.dumps([{"type": "PipeWire:Interface:Node", "info": {"props": {"node.name": "echo-cancel-source"}}}]))
             self.assertNotEqual(run("enable", str(plugin)).returncode, 0)
             graph.write_text("[]")
-            self.assertEqual(run("enable", str(plugin)).returncode, 0)
+            enabled = run("enable", str(plugin))
+            self.assertEqual(enabled.returncode, 0, enabled.stderr.decode())
+            self.assertEqual(json.loads(graph.read_text())[3]["metadata"][0]["value"]["name"], "wired-mic")
             self.assertTrue(config.exists())
             self.assertEqual(installed.read_bytes(), plugin.read_bytes())
             self.assertIn('node.name = "echo-cancel-source"', config.read_text())

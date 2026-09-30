@@ -78,6 +78,8 @@ This installs to `~/.local/bin`, adds a systemd user service and desktop launche
 sh packaging/ofono-enable.sh
 ```
 
+Start the installed daemon before running the backend setup so its private idle check can succeed (`systemctl --user start iblueconnectd.service` on a fresh installation). The backend script selects legacy Lua configuration for WirePlumber 0.4 and SPA-JSON for 0.5 and later. It stops if call state cannot be verified and rechecks before service changes; if a restart causes a transient unavailable state, inspect the state before continuing.
+
 Connect the iPhone **yourself** from Bluetooth settings, then open IBlueConnect from the application menu. If oFono is removed later, `sh packaging/ofono-rollback.sh` restores the native backend; the script stops the IBlueConnect daemon. It does not reconnect the phone.
 
 ## Optional microphone noise suppression
@@ -89,6 +91,8 @@ sh packaging/build-rnnoise.sh
 systemctl --user enable filter-chain.service
 sh packaging/rnnoise.sh enable target/rnnoise/build/bin/ladspa/librnnoise_ladspa.so
 ```
+
+The backend setup installs a call-only rule: physical microphone → RNNoise → outgoing phone audio. Keep Ubuntu's default input set to the physical microphone; other apps keep using it. On Ubuntu 26.04.1 with WirePlumber 0.5.13, a live graph confirmed this route with no direct microphone bypass, and the user confirmed working two-way audio and reduced noise. Filter-absent fallback and microphone switching still need live tests.
 
 The build script downloads the pinned [noise-suppression-for-voice v1.10 source](https://github.com/werman/noise-suppression-for-voice/releases/tag/v1.10) and verifies its checksum. It needs `curl`, `sha256sum`, `tar`, CMake, and a C++ compiler. Pass a previously downloaded v1.10 archive to `build-rnnoise.sh` to build without that download. The enable script checks a fresh daemon snapshot and PipeWire graph before restarting the user filter service; it refuses to change the filter during a call. To remove the filter after the call ends:
 
@@ -107,6 +111,7 @@ cc -Wall -Wextra -DIBLUECONNECT_UI_TEST src/iblueconnect-ui.c -o /tmp/iblueconne
 /tmp/iblueconnect-ui-test
 sh packaging/test_build_rnnoise.sh
 python3 packaging/test_rnnoise.py
+python3 packaging/test_ofono.py
 ```
 
 Hardware acceptance requires user-operated calls. Tests and graph inspection alone do not prove that an iPhone call works.

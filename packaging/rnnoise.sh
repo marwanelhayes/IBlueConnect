@@ -30,8 +30,6 @@ filter_ready() {
       [$g[] | select(.type == "PipeWire:Interface:Node" and .info.props."media.class" == "Audio/Source" and
         .info.props."node.name" != "echo-cancel-source" and .info.props."node.virtual" != true) | .id] as $physical |
       ($virtual | length) == 1 and ($capture | length) == 1 and
-      any($g[]; .type == "PipeWire:Interface:Metadata" and .props."metadata.name" == "default" and
-        any(.metadata[]?; .key == "default.audio.source" and .value.name == "echo-cancel-source")) and
       any($g[]; .type == "PipeWire:Interface:Link" and (.info.state == "active" or .info.state == "paused") and
         .info."input-node-id" == $capture[0] and (.info."output-node-id" as $id | $physical | index($id) != null))
     ' >/dev/null 2>&1
