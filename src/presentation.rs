@@ -7,6 +7,9 @@ pub enum Effect {
     Alert(String, u64),
     PostMissedSilently(String, String, Option<String>),
     RemoveMissed(String),
+    /// A second call is waiting: show the call controller and play one soft beep.
+    ShowWaiting(String),
+    WaitingAlert(String),
 }
 
 struct Ringing {
@@ -149,6 +152,7 @@ impl PresentationPolicy {
                     && missed.posted && !missed.dismissed),
             Effect::RemoveMissed(id) => self.missed.iter()
                 .any(|missed| missed.id == *id && !missed.posted),
+            Effect::ShowWaiting(_) | Effect::WaitingAlert(_) => true,
         }
     }
 

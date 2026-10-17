@@ -755,13 +755,16 @@ GtkWidget *mock_main_window_new(GtkApplication *app, MockUiModel *model,
     gtk_window_set_default_size(GTK_WINDOW(self->window), 480, 700);
     GtkWidget *toolbar = adw_toolbar_view_new();
     GtkWidget *header = adw_header_bar_new();
+    adw_header_bar_set_centering_policy(ADW_HEADER_BAR(header), ADW_CENTERING_POLICY_STRICT);
     GtkWidget *title_stack = gtk_stack_new();
     GtkWidget *header_switcher = adw_view_switcher_new();
     gtk_stack_add_named(GTK_STACK(title_stack), header_switcher, "switcher");
-    gtk_stack_add_named(GTK_STACK(title_stack), text_label("IBlueConnect", "heading"), "title");
+    GtkWidget *app_title = text_label("IBlueConnect", "heading");
+    gtk_label_set_xalign(GTK_LABEL(app_title), 0.5);
+    gtk_stack_add_named(GTK_STACK(title_stack), app_title, "title");
     gtk_stack_set_visible_child_name(GTK_STACK(title_stack), "switcher");
     GtkWidget *header_bin = adw_breakpoint_bin_new();
-    gtk_widget_set_size_request(header_bin, 140, 32);
+    gtk_widget_set_size_request(header_bin, 110, 32);
     adw_breakpoint_bin_set_child(ADW_BREAKPOINT_BIN(header_bin), title_stack);
     adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), header_bin);
     self->device = gtk_menu_button_new();
@@ -769,7 +772,7 @@ GtkWidget *mock_main_window_new(GtkApplication *app, MockUiModel *model,
     gtk_menu_button_set_label(GTK_MENU_BUTTON(self->device), device_label);
     g_free(device_label);
     gtk_menu_button_set_popover(GTK_MENU_BUTTON(self->device), build_device_menu(self));
-    adw_header_bar_pack_end(ADW_HEADER_BAR(header), self->device);
+    adw_header_bar_pack_start(ADW_HEADER_BAR(header), self->device);
     GtkWidget *menu = gtk_button_new_from_icon_name("open-menu-symbolic");
     gtk_widget_set_tooltip_text(menu, "Preferences");
     gtk_accessible_update_property(GTK_ACCESSIBLE(menu), GTK_ACCESSIBLE_PROPERTY_LABEL,
@@ -867,4 +870,10 @@ void mock_main_window_update(GtkWidget *window)
     render_detail(self);
     gtk_button_set_label(GTK_BUTTON(self->dial_button), self->model->can_add_call ? "Add call" : "Call");
     dial_changed(GTK_EDITABLE(self->dial_entry), self);
+}
+
+void mock_main_window_show_dial(GtkWidget *window)
+{
+    MainView *self = g_object_get_data(G_OBJECT(window), "mock-main-view");
+    if (self) focus_dial(window, NULL, self);
 }

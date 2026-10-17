@@ -19,5 +19,7 @@ typedef void (*MockMainCallback)(MockMainAction action, int contact_index,
 GtkWidget *mock_main_window_new(GtkApplication *app, MockUiModel *model,
                                 MockMainCallback callback, gpointer user_data);
 void mock_main_window_update(GtkWidget *window);
+/* Shows the Keypad tab, e.g. for Add call from the call controller. */
+void mock_main_window_show_dial(GtkWidget *window);
 
 #endif

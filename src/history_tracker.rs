@@ -11,6 +11,8 @@ use crate::ofono::OfonoCall;
 pub struct HistoryTracker {
     store: HistoryStore,
     current: Option<Tracked>,
+    /// Waiting calls beside the current one, followed by oFono path until they end or become current.
+    waiting: Vec<Tracked>,
     session_changed: bool,
 }
 
@@ -33,7 +35,7 @@ impl HistoryTracker {
         for (id, duration) in orphaned {
             store.finish(&id, Outcome::Unknown, SystemTime::now(), duration)?;
         }
-        Ok(Self { store, current: None, session_changed: false })
+        Ok(Self { store, current: None, waiting: Vec::new(), session_changed: false })
     }
 
     pub fn recent(&self) -> impl Iterator<Item = &CallRecord> {
@@ -42,6 +44,13 @@ impl HistoryTracker {
 
     pub fn backend_lost(&mut self, now: SystemTime) {
         self.session_changed = true;
+        for waiting in std::mem::take(&mut self.waiting) {
+            let duration = waiting.active_duration
+                + waiting.active_since.and_then(|at| now.duration_since(at).ok()).unwrap_or_default();
+            if self.store.finish(&waiting.id, Outcome::Unknown, now, duration).is_err() {
+                eprintln!("Call history could not be saved");
+            }
+        }
         if let Some(current) = &mut self.current {
             if let Some(at) = current.active_since.take() {
                 current.active_duration += now.duration_since(at).unwrap_or_default();
@@ -71,11 +80,59 @@ impl HistoryTracker {
         Ok(())
     }
 
+    /// Records each waiting call: missed if it ends unanswered, received once it was active.
+    fn reconcile_waiting(&mut self, calls: &[OfonoCall], now: SystemTime) -> io::Result<()> {
+        for mut waiting in std::mem::take(&mut self.waiting) {
+            let Some(call) = calls.iter().find(|call| call.path == waiting.path && call.state != "disconnected") else {
+                let duration = waiting.active_duration
+                    + waiting.active_since.and_then(|at| now.duration_since(at).ok()).unwrap_or_default();
+                self.store.finish(&waiting.id, waiting.finish_as, now, duration)?;
+                continue;
+            };
+            if call.state == "active" {
+                waiting.active_since.get_or_insert(now);
+                waiting.last_phase = CallPhase::Active;
+                waiting.finish_as = Outcome::Unknown;
+            } else if let Some(at) = waiting.active_since.take() {
+                waiting.active_duration += now.duration_since(at).unwrap_or_default();
+            }
+            self.waiting.push(waiting);
+        }
+        for call in calls.iter().filter(|call| call.state == "waiting") {
+            if self.waiting.iter().any(|waiting| waiting.path == call.path) { continue; }
+            let id = self.observe(call, Direction::Incoming, now)?;
+            self.waiting.push(Tracked {
+                path: call.path.clone(), id, last_phase: CallPhase::Incoming,
+                active_since: None, active_duration: Duration::ZERO, finish_as: Outcome::Missed,
+            });
+        }
+        Ok(())
+    }
+
+    fn observe(&mut self, call: &OfonoCall, direction: Direction, now: SystemTime) -> io::Result<String> {
+        let mut bytes = [0; 16];
+        File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+        let id = format!("{:032x}", u128::from_ne_bytes(bytes));
+        self.store.observe(ObservedCall {
+            id: id.clone(), number: call.number.clone(), name_snapshot: call.name.clone(),
+            direction, started_at: now,
+        })?;
+        Ok(id)
+    }
+
     pub fn reconcile(&mut self, observed: &Observation, calls: &[OfonoCall], now: SystemTime) -> io::Result<()> {
+        self.reconcile_waiting(calls, now)?;
         if matches!(observed, Observation::Idle) {
             return self.finish_current(now);
         }
         let Observation::Call(observed_call) = observed else { return Ok(()) };
+        // A formerly waiting call that is now the only call continues its own record.
+        if !self.session_changed && self.current.as_ref().is_none_or(|current| current.path != observed_call.id) {
+            if let Some(index) = self.waiting.iter().position(|waiting| waiting.path == observed_call.id) {
+                self.finish_current(now)?;
+                self.current = Some(self.waiting.remove(index));
+            }
+        }
         let reused = self.current.as_ref().is_some_and(|current| {
             matches!(current.last_phase, CallPhase::Active | CallPhase::Ending)
                 && matches!(observed_call.phase, CallPhase::Incoming | CallPhase::OutgoingDialing | CallPhase::OutgoingAlerting)
@@ -99,13 +156,7 @@ impl HistoryTracker {
             CallPhase::OutgoingDialing | CallPhase::OutgoingAlerting => Direction::Outgoing,
             _ => Direction::Unknown,
         };
-        let mut bytes = [0; 16];
-        File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-        let id = format!("{:032x}", u128::from_ne_bytes(bytes));
-        self.store.observe(ObservedCall {
-            id: id.clone(), number: call.number.clone(), name_snapshot: call.name.clone(),
-            direction, started_at: now,
-        })?;
+        let id = self.observe(call, direction, now)?;
         self.current = Some(Tracked {
             path: call.path.clone(), id, last_phase: observed_call.phase,
             active_since: (observed_call.phase == CallPhase::Active).then_some(now),
@@ -234,6 +285,32 @@ mod tests {
         let record = tracker.recent().next().unwrap();
         assert_eq!(record.outcome, Outcome::Unknown);
         assert!(record.ended_at.is_some());
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn waiting_call_is_missed_unless_answered_and_an_answered_one_is_not_duplicated() {
+        let path = std::env::temp_dir().join(format!("iblueconnect-tracker-{}-{}", std::process::id(), SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos())).join("history");
+        let mut tracker = HistoryTracker::open(&path).unwrap();
+        let call = |path: &str, state: &str| OfonoCall { path: path.into(), state: state.into(), multiparty: false, number: None, name: None };
+        let at = |seconds| SystemTime::UNIX_EPOCH + Duration::from_secs(seconds);
+        let active = |path: &str| Observation::Call(Call::new(path, CallPhase::Active, AudioLocation::Unknown));
+        tracker.reconcile(&active("/m/a"), &[call("/m/a", "active")], at(0)).unwrap();
+        // A waiting call that goes away unanswered is missed.
+        tracker.reconcile(&Observation::Unavailable, &[call("/m/a", "active"), call("/m/b", "waiting")], at(1)).unwrap();
+        tracker.reconcile(&active("/m/a"), &[call("/m/a", "active")], at(2)).unwrap();
+        // An answered waiting call stays one received record after the first call ends.
+        tracker.reconcile(&Observation::Unavailable, &[call("/m/a", "active"), call("/m/c", "waiting")], at(3)).unwrap();
+        tracker.reconcile(&Observation::Unavailable, &[call("/m/a", "held"), call("/m/c", "active")], at(4)).unwrap();
+        tracker.reconcile(&active("/m/c"), &[call("/m/c", "active")], at(6)).unwrap();
+        tracker.reconcile(&Observation::Idle, &[], at(10)).unwrap();
+        let records: Vec<_> = tracker.recent().collect();
+        assert_eq!(records.len(), 3);
+        let (first, missed, received) = (records[2], records[1], records[0]);
+        assert_eq!(first.ended_at, Some(at(6)));
+        assert_eq!((missed.direction, missed.outcome, missed.ended_at), (Direction::Incoming, Outcome::Missed, Some(at(2))));
+        assert_eq!((received.direction, received.outcome, received.ended_at), (Direction::Incoming, Outcome::Unknown, Some(at(10))));
+        assert_eq!(received.active_duration, Duration::from_secs(6));
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

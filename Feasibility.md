@@ -1,5 +1,9 @@
 # Feasibility record
 
+## 2026-10-07 tethering connection versus call readiness
+
+While the user reported Bluetooth connected but calling unavailable, private read-only inspection found one connected paired/trusted device with incomplete service discovery and an unpowered/offline HFP modem without a call interface. All core services were active and the expected oFono configuration was installed. The user identified phone internet tethering as the connection in use and corrected it manually. A subsequent private check verified complete service discovery, a powered/online HFP modem with `VoiceCallManager`, and daemon `ready/idle` with no calls or call-audio nodes. No services or configuration were changed. This establishes recovered call readiness; the exact tethering interaction and live audio were not tested. See the 2026-10-07 entry in [HANDOFF.md](HANDOFF.md) for the offline regression and session details.
+
 ## 2026-09-30 Ubuntu 26.04.1 silent-call diagnosis
 
 The user reported no audio in either direction during a received call after moving to Ubuntu 26.04.1 LTS. Read-only inspection found WirePlumber 0.5.13, PipeWire 1.6.2, and BlueZ 5.85. The installed app-owned oFono override was still `~/.config/wireplumber/bluetooth.lua.d/51-iblueconnect-ofono.lua`; no modern fragment was present. WirePlumber's current-boot journal contained one warning that Lua configuration files are unsupported and two duplicate-profile-registration errors. This establishes a configuration migration defect and suggests competing backend ownership, but does not independently establish the exact failed-call transport.

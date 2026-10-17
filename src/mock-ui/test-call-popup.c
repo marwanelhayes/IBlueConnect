@@ -10,7 +10,7 @@ typedef struct {
     MockUiModel model;
     MockCallPopup *popup;
     const char *last_action;
-    const char *last_argument;
+    char last_argument[128]; /* Copied: row buttons and their arguments are rebuilt on update. */
 } Fixture;
 
 static GtkApplication *app;
@@ -30,7 +30,7 @@ static void action(const char *name, const char *argument, gpointer data)
 {
     Fixture *f = data;
     f->last_action = name;
-    f->last_argument = argument;
+    g_strlcpy(f->last_argument, argument ? argument : "", sizeof f->last_argument);
     if (strcmp(name, "ignore") == 0) mock_ui_ignore(&f->model);
     else if (strcmp(name, "decline") == 0) mock_ui_decline(&f->model);
     else if (strcmp(name, "answer") == 0) mock_ui_answer(&f->model);
@@ -38,6 +38,8 @@ static void action(const char *name, const char *argument, gpointer data)
     else if (strcmp(name, "end") == 0) mock_ui_end_call(&f->model);
     else if (strcmp(name, "compact") == 0) mock_ui_set_compact(&f->model, argument[0] == '1');
     else if (strcmp(name, "audio") == 0) mock_ui_select_audio(&f->model, (size_t)atoi(argument));
+    else if (strcmp(name, "ignore-waiting") == 0) mock_ui_ignore_waiting(&f->model);
+    else mock_ui_calls_action(&f->model, name, argument);
     mock_call_popup_update(f->popup, &f->model);
 }
 
@@ -141,8 +143,9 @@ static void incoming_flow(gconstpointer ignored)
     g_assert_true(gtk_widget_get_visible(GTK_WIDGET(window)));
     click(&f, "answer");
     GtkWidget *mute_content = gtk_button_get_child(GTK_BUTTON(find(GTK_WIDGET(window), "mute")));
-    g_assert_true(ADW_IS_BUTTON_CONTENT(mute_content));
-    g_assert_cmpstr(adw_button_content_get_label(ADW_BUTTON_CONTENT(mute_content)), ==, "Mute");
+    g_assert_true(GTK_IS_IMAGE(mute_content));
+    g_assert_cmpstr(gtk_image_get_icon_name(GTK_IMAGE(mute_content)), ==, "audio-input-microphone-symbolic");
+    g_assert_cmpstr(gtk_widget_get_tooltip_text(find(GTK_WIDGET(window), "mute")), ==, "Mute");
     g_assert_cmpint(f.model.call, ==, MOCK_CALL_ACTIVE);
     g_assert_true(mock_call_popup_window(f.popup) == window);
     assert_identity_on_screen(window);
@@ -154,12 +157,23 @@ static void incoming_flow(gconstpointer ignored)
     click(&f, "mute");
     g_assert_true(f.model.muted);
     mute_content = gtk_button_get_child(GTK_BUTTON(find(GTK_WIDGET(window), "mute")));
-    g_assert_cmpstr(adw_button_content_get_label(ADW_BUTTON_CONTENT(mute_content)), ==, "Unmute");
+    g_assert_true(GTK_IS_IMAGE(mute_content));
+    g_assert_cmpstr(gtk_image_get_icon_name(GTK_IMAGE(mute_content)), ==, "microphone-sensitivity-muted-symbolic");
+    g_assert_cmpstr(gtk_widget_get_tooltip_text(find(GTK_WIDGET(window), "mute")), ==, "Unmute");
     click(&f, "compact");
     g_assert_true(f.model.compact);
     assert_identity_on_screen(window);
     g_assert_false(gtk_widget_get_visible(find(GTK_WIDGET(window), "keypad-toggle")));
     g_assert_true(gtk_widget_get_visible(find(GTK_WIDGET(window), "audio-selector")));
+    mute_content = gtk_button_get_child(GTK_BUTTON(find(GTK_WIDGET(window), "mute")));
+    g_assert_true(GTK_IS_IMAGE(mute_content));
+    g_assert_cmpstr(gtk_image_get_icon_name(GTK_IMAGE(mute_content)), ==, "microphone-sensitivity-muted-symbolic");
+    click(&f, "mute");
+    g_assert_false(f.model.muted);
+    mute_content = gtk_button_get_child(GTK_BUTTON(find(GTK_WIDGET(window), "mute")));
+    g_assert_cmpstr(gtk_image_get_icon_name(GTK_IMAGE(mute_content)), ==, "audio-input-microphone-symbolic");
+    g_assert_cmpstr(gtk_widget_get_tooltip_text(find(GTK_WIDGET(window), "mute")), ==, "Mute");
+    click(&f, "mute");
     click(&f, "expand");
     g_assert_false(f.model.compact);
     GtkEventController *keys = NULL;
@@ -368,6 +382,134 @@ static void conference_end_targets_all_calls(gconstpointer ignored)
     gtk_window_destroy(window);
 }
 
+static gboolean shown(Fixture *f, const char *name)
+{
+    GtkWidget *widget = find(GTK_WIDGET(mock_call_popup_window(f->popup)), name);
+    return widget && gtk_widget_get_visible(widget);
+}
+
+static const char *text_of(Fixture *f, const char *name)
+{
+    GtkWidget *widget = find(GTK_WIDGET(mock_call_popup_window(f->popup)), name);
+    g_assert_nonnull(widget);
+    return gtk_label_get_text(GTK_LABEL(widget));
+}
+
+static int min_width(Fixture *f, const char *name)
+{
+    int minimum, natural;
+    GtkWidget *window = GTK_WIDGET(mock_call_popup_window(f->popup));
+    gtk_widget_measure(name ? find(window, name) : window, GTK_ORIENTATION_HORIZONTAL, -1,
+                       &minimum, &natural, NULL, NULL);
+    return minimum;
+}
+
+static void waiting_banner(gconstpointer ignored)
+{
+    (void)ignored;
+    Fixture f = {0};
+    mock_ui_init(&f.model);
+    f.popup = mock_call_popup_new(app, action, &f);
+    GtkWindow *window = mock_call_popup_window(f.popup);
+    mock_ui_incoming(&f.model, 0);
+    mock_ui_answer(&f.model);
+    mock_call_popup_update(f.popup, &f.model);
+    g_assert_false(shown(&f, "waiting-banner"));
+    int single = min_width(&f, NULL);
+    mock_ui_simulate_calls(&f.model, "waiting");
+    mock_call_popup_update(f.popup, &f.model);
+    char waiting[128];
+    g_strlcpy(waiting, f.model.waiting_call_id, sizeof waiting);
+    g_assert_true(shown(&f, "waiting-banner"));
+    g_assert_cmpstr(text_of(&f, "waiting-caller"), ==, mock_contacts[1].name);
+    g_assert_cmpstr(text_of(&f, "waiting-status"), ==, "Waiting");
+    g_assert_true(gtk_widget_has_css_class(find(GTK_WIDGET(window), "waiting-decline"), "call-decline"));
+    g_assert_true(gtk_widget_has_css_class(find(GTK_WIDGET(window), "hold-and-answer"), "call-answer"));
+    g_assert_cmpstr(gtk_widget_get_tooltip_text(find(GTK_WIDGET(window), "hold-and-answer")), ==, "Hold & Accept");
+    g_assert_true(shown(&f, "hold-and-answer") && shown(&f, "release-and-answer"));
+    g_assert_cmpint(min_width(&f, "waiting-banner"), <, single); /* The banner keeps the controller narrow. */
+    click(&f, "waiting-ignore");
+    g_assert_cmpstr(f.last_action, ==, "ignore-waiting");
+    g_assert_false(shown(&f, "waiting-banner"));
+    g_assert_true(gtk_widget_get_visible(GTK_WIDGET(window))); /* The phone keeps ringing. */
+    mock_ui_simulate_calls(&f.model, "waiting");
+    mock_call_popup_update(f.popup, &f.model);
+    click(&f, "waiting-decline");
+    g_assert_cmpstr(f.last_action, ==, "end-line");
+    g_assert_cmpstr(f.last_argument, ==, waiting);
+    g_assert_false(shown(&f, "waiting-banner"));
+    mock_ui_simulate_calls(&f.model, "two-calls");
+    mock_ui_add_line(&f.model, "/w", "", "0100", MOCK_LINE_WAITING, false);
+    mock_ui_derive_calls(&f.model);
+    mock_call_popup_update(f.popup, &f.model);
+    g_assert_true(shown(&f, "waiting-banner"));
+    g_assert_cmpstr(text_of(&f, "waiting-caller"), ==, "0100");
+    g_assert_false(shown(&f, "hold-and-answer")); /* A held call already exists. */
+    click(&f, "release-and-answer");
+    g_assert_cmpstr(f.last_action, ==, "release-and-answer");
+    g_assert_cmpstr(f.last_argument, ==, "/w");
+    gtk_window_destroy(window);
+}
+
+static void call_list_and_multi_call_actions(gconstpointer ignored)
+{
+    (void)ignored;
+    Fixture f = {0};
+    mock_ui_init(&f.model);
+    f.popup = mock_call_popup_new(app, action, &f);
+    GtkWindow *window = mock_call_popup_window(f.popup);
+    mock_ui_incoming(&f.model, 0);
+    mock_ui_answer(&f.model);
+    mock_call_popup_update(f.popup, &f.model);
+    g_assert_false(shown(&f, "call-list")); /* One call keeps the single-call controller. */
+    int single = min_width(&f, NULL);
+    g_assert_false(shown(&f, "swap") || shown(&f, "add-call"));
+    f.model.can_add_call = true;
+    mock_call_popup_update(f.popup, &f.model);
+    g_assert_true(shown(&f, "add-call"));
+    g_assert_false(shown(&f, "call-list"));
+    click(&f, "add-call");
+    g_assert_cmpstr(f.last_action, ==, "add-call");
+    mock_ui_simulate_calls(&f.model, "two-calls");
+    mock_call_popup_update(f.popup, &f.model);
+    g_assert_true(shown(&f, "call-list"));
+    g_assert_false(shown(&f, "conference-header"));
+    g_assert_cmpstr(text_of(&f, "call-row-status-0"), ==, "Active");
+    g_assert_cmpstr(text_of(&f, "call-row-status-1"), ==, "On hold");
+    g_assert_cmpstr(text_of(&f, "call-row-caller-1"), ==, mock_contacts[1].name);
+    g_assert_true(shown(&f, "swap") && shown(&f, "merge"));
+    g_assert_false(shown(&f, "resume") || shown(&f, "add-call") || shown(&f, "call-row-private-0"));
+    g_assert_cmpstr(gtk_widget_get_tooltip_text(find(GTK_WIDGET(window), "call-row-end-1")), ==, "End call");
+    char held[128];
+    g_strlcpy(held, f.model.lines[1].id, sizeof held);
+    click(&f, "call-row-end-1");
+    g_assert_cmpstr(f.last_action, ==, "end-line");
+    g_assert_cmpstr(f.last_argument, ==, held);
+    g_assert_false(shown(&f, "call-list"));
+    mock_ui_simulate_calls(&f.model, "two-calls");
+    mock_call_popup_update(f.popup, &f.model);
+    click(&f, "swap");
+    g_assert_cmpstr(f.last_action, ==, "swap");
+    g_assert_cmpstr(text_of(&f, "call-row-status-0"), ==, "On hold");
+    mock_ui_simulate_calls(&f.model, "conference");
+    mock_call_popup_update(f.popup, &f.model);
+    g_assert_cmpstr(text_of(&f, "conference-header"), ==, "Conference (3)");
+    g_assert_true(shown(&f, "call-row-private-2") && shown(&f, "add-call"));
+    g_assert_cmpint(min_width(&f, "call-list"), <, single);
+    g_assert_false(shown(&f, "swap") || shown(&f, "merge"));
+    g_assert_cmpstr(gtk_widget_get_tooltip_text(find(GTK_WIDGET(window), "end")), ==, "End conference");
+    char member[128];
+    g_strlcpy(member, f.model.lines[2].id, sizeof member);
+    click(&f, "call-row-private-2");
+    g_assert_cmpstr(f.last_action, ==, "private");
+    g_assert_cmpstr(f.last_argument, ==, member);
+    g_assert_cmpstr(text_of(&f, "conference-header"), ==, "Conference (2)");
+    g_assert_false(shown(&f, "call-row-private-0")); /* Private needs the conference alone. */
+    click(&f, "compact");
+    g_assert_false(shown(&f, "call-list"));
+    gtk_window_destroy(window);
+}
+
 static void voice_drives_waveform_and_speaking_glow(gconstpointer ignored)
 {
     (void)ignored;
@@ -410,6 +552,75 @@ static void voice_drives_waveform_and_speaking_glow(gconstpointer ignored)
     gtk_window_destroy(window);
 }
 
+static void assert_button_color(GtkWidget *button, gboolean green)
+{
+    /* Check rendered pixels, so a theme overriding our background fails too. */
+    GdkPaintable *paintable = gtk_widget_paintable_new(button);
+    GtkSnapshot *snapshot = gtk_snapshot_new();
+    int width = gtk_widget_get_width(button), height = gtk_widget_get_height(button);
+    g_assert_cmpint(width, >, 0);
+    g_assert_cmpint(height, >, 0);
+    gdk_paintable_snapshot(paintable, GDK_SNAPSHOT(snapshot), width, height);
+    GskRenderNode *node = gtk_snapshot_free_to_node(snapshot);
+    g_assert_nonnull(node);
+    graphene_rect_t bounds = GRAPHENE_RECT_INIT(0, 0, width, height);
+    GskRenderer *renderer = gtk_native_get_renderer(gtk_widget_get_native(button));
+    GdkTexture *texture = gsk_renderer_render_texture(renderer, node, &bounds);
+    gsize stride = width * 4;
+    guchar *pixels = g_malloc(stride * height);
+    gdk_texture_download(texture, pixels, stride);
+    guint colored = 0;
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            /* GDK's default download format is premultiplied BGRA on x86_64. */
+            const guchar *pixel = pixels + y * stride + x * 4;
+            double red = pixel[2], lime = pixel[1], blue = pixel[0];
+            if (green ? lime > red * 1.3 && lime > blue * 1.3 :
+                        red > lime * 1.3 && red > blue * 1.3)
+                colored++;
+        }
+    }
+    g_assert_cmpuint(colored, >, width * height / 2);
+    g_free(pixels);
+    g_object_unref(texture);
+    gsk_render_node_unref(node);
+    g_object_unref(paintable);
+}
+
+static void incoming_colors(gconstpointer ignored)
+{
+    (void)ignored;
+    AdwStyleManager *style = adw_style_manager_get_default();
+    AdwColorScheme previous = adw_style_manager_get_color_scheme(style);
+    Fixture f = {0};
+    mock_ui_init(&f.model);
+    f.popup = mock_call_popup_new(app, action, &f);
+    mock_ui_incoming(&f.model, 0);
+    mock_call_popup_update(f.popup, &f.model);
+    GtkWindow *window = mock_call_popup_window(f.popup);
+    GtkWidget *answer = find(GTK_WIDGET(window), "answer");
+    GtkWidget *decline = find(GTK_WIDGET(window), "decline");
+    const GtkStateFlags states[] = { GTK_STATE_FLAG_NORMAL, GTK_STATE_FLAG_PRELIGHT,
+                                   GTK_STATE_FLAG_ACTIVE, GTK_STATE_FLAG_INSENSITIVE };
+    for (int dark = 0; dark < 2; dark++) {
+        adw_style_manager_set_color_scheme(style, dark ? ADW_COLOR_SCHEME_FORCE_DARK :
+                                                       ADW_COLOR_SCHEME_FORCE_LIGHT);
+        for (guint i = 0; i < G_N_ELEMENTS(states); i++) {
+            gtk_widget_set_state_flags(answer, states[i], TRUE);
+            gtk_widget_set_state_flags(decline, states[i], TRUE);
+            gint64 deadline = g_get_monotonic_time() + 250 * G_TIME_SPAN_MILLISECOND;
+            while (g_get_monotonic_time() < deadline) {
+                while (g_main_context_pending(NULL)) g_main_context_iteration(NULL, FALSE);
+                g_usleep(1000);
+            }
+            assert_button_color(answer, TRUE);
+            assert_button_color(decline, FALSE);
+        }
+    }
+    gtk_window_destroy(window);
+    adw_style_manager_set_color_scheme(style, previous);
+}
+
 int main(int argc, char **argv)
 {
     gtk_test_init(&argc, &argv);
@@ -425,6 +636,9 @@ int main(int argc, char **argv)
     g_test_add_data_func("/popup/conference-end", NULL, conference_end_targets_all_calls);
     g_test_add_data_func("/popup/movable", NULL, movable_popup);
     g_test_add_data_func("/popup/voice", NULL, voice_drives_waveform_and_speaking_glow);
+    g_test_add_data_func("/popup/incoming-colors", NULL, incoming_colors);
+    g_test_add_data_func("/popup/waiting-banner", NULL, waiting_banner);
+    g_test_add_data_func("/popup/call-list", NULL, call_list_and_multi_call_actions);
     int result = g_test_run();
     g_object_unref(app);
     return result;

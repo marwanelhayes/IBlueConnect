@@ -9,10 +9,13 @@
 #endif
 
 struct MockCallPopup {
-    GtkWidget *window, *avatar, *mute_content, *audio_content, *end_content, *identity, *number, *subtitle, *timer, *waveform;
+    GtkWidget *window, *avatar, *audio_content, *end_content, *identity, *number, *subtitle, *timer, *waveform;
     GtkWidget *incoming, *outgoing, *active, *call_management, *hold_button, *resume_button, *merge_button, *terminal, *details;
     GtkWidget *compact_button, *expand_button, *mute_button, *keypad_button, *keypad, *tone_feedback, *open_app_button, *end_button;
     GtkWidget *audio_button, *audio_popover, *audio_choices, *audio_empty;
+    GtkWidget *waiting, *waiting_caller, *waiting_decline, *hold_answer, *release_answer;
+    GtkWidget *call_list, *swap_button, *add_call_button;
+    char *list_key; /* What call_list shows; rows are rebuilt only when it changes. */
     GtkWidget **audio_checks;
     MockCallPopupAction action;
     gpointer user_data;
@@ -208,6 +211,7 @@ static void on_destroy(GtkWidget *window, gpointer data)
     if (popup->placement_tick) g_source_remove(popup->placement_tick);
 #endif
     g_free(popup->audio_checks);
+    g_free(popup->list_key);
     g_free(popup);
 }
 
@@ -301,6 +305,101 @@ void mock_call_popup_set_voice(MockCallPopup *popup, double level)
     show_voice(popup);
 }
 
+static const char *line_caller(const MockLine *line)
+{
+    return line->caller[0] ? line->caller : line->number[0] ? line->number : "Unknown caller";
+}
+
+static const char *line_status(const MockLine *line)
+{
+    switch (line->phase) {
+    case MOCK_LINE_ACTIVE: return "Active";
+    case MOCK_LINE_HELD: return "On hold";
+    case MOCK_LINE_DIALING: return "Calling…";
+    case MOCK_LINE_WAITING: return "Waiting";
+    case MOCK_LINE_INCOMING: return "Incoming";
+    default: return "";
+    }
+}
+
+static void set_argument(GtkWidget *widget, const char *argument)
+{
+    g_object_set_data_full(G_OBJECT(widget), "mock-argument", g_strdup(argument), g_free);
+}
+
+static GtkWidget *row_button(MockCallPopup *popup, const char *text, const char *icon, const char *format,
+                             unsigned index, const char *action, const MockLine *line)
+{
+    const char *id = line->id;
+    char name[40];
+    g_snprintf(name, sizeof name, format, index);
+    GtkWidget *widget = action_button(popup, text, icon, g_intern_string(name), NULL);
+    g_object_set_data(G_OBJECT(widget), "mock-action", (gpointer)action);
+    set_argument(widget, id);
+    char *spoken = g_strdup_printf("%s · %s", text, line_caller(line)); /* Rows share a tooltip; say whose. */
+    gtk_accessible_update_property(GTK_ACCESSIBLE(widget), GTK_ACCESSIBLE_PROPERTY_LABEL, spoken, -1);
+    g_free(spoken);
+    return widget;
+}
+
+static GtkWidget *call_row(MockCallPopup *popup, const MockLine *line, unsigned index, gboolean can_private)
+{
+    char name[40];
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    if (line->multiparty) gtk_widget_set_margin_start(row, 12);
+    GtkWidget *caller = label(line_caller(line), NULL);
+    g_snprintf(name, sizeof name, "call-row-caller-%u", index);
+    gtk_widget_set_name(caller, name);
+    gtk_widget_set_hexpand(caller, TRUE);
+    gtk_label_set_ellipsize(GTK_LABEL(caller), PANGO_ELLIPSIZE_END);
+    gtk_box_append(GTK_BOX(row), caller);
+    GtkWidget *status = label(line_status(line), "dim-label");
+    g_snprintf(name, sizeof name, "call-row-status-%u", index);
+    gtk_widget_set_name(status, name);
+    gtk_box_append(GTK_BOX(row), status);
+    if (line->multiparty) {
+        GtkWidget *split = row_button(popup, "Private", NULL, "call-row-private-%u", index, "private", line);
+        gtk_widget_set_visible(split, can_private);
+        gtk_box_append(GTK_BOX(row), split);
+    }
+    GtkWidget *end = row_button(popup, "End call", "call-stop-symbolic", "call-row-end-%u", index, "end-line", line);
+    gtk_widget_add_css_class(end, "destructive-action");
+    gtk_box_append(GTK_BOX(row), end);
+    return row;
+}
+
+static void render_calls(MockCallPopup *popup, const MockUiModel *model)
+{
+    GString *key = g_string_new(NULL);
+    unsigned members = 0;
+    for (unsigned i = 0; i < model->call_count; i++) {
+        const MockLine *line = &model->lines[i];
+        members += line->multiparty;
+        g_string_append_printf(key, "%s\n%s\n%s\n%d%d\n", line->id, line->caller, line->number,
+                               line->phase, line->multiparty);
+    }
+    g_string_append_c(key, model->can_private ? 'p' : '-');
+    if (popup->list_key && strcmp(popup->list_key, key->str) == 0) {
+        g_string_free(key, TRUE);
+        return;
+    }
+    g_free(popup->list_key);
+    popup->list_key = g_string_free(key, FALSE);
+    for (GtkWidget *child; (child = gtk_widget_get_first_child(popup->call_list));)
+        gtk_box_remove(GTK_BOX(popup->call_list), child);
+    if (members) {
+        char title[32];
+        g_snprintf(title, sizeof title, "Conference (%u)", members);
+        GtkWidget *header = label(title, "heading");
+        gtk_widget_set_name(header, "conference-header");
+        gtk_box_append(GTK_BOX(popup->call_list), header);
+    }
+    for (int conference = 1; conference >= 0; conference--)
+        for (unsigned i = 0; i < model->call_count; i++)
+            if (model->lines[i].multiparty == conference)
+                gtk_box_append(GTK_BOX(popup->call_list), call_row(popup, &model->lines[i], i, model->can_private));
+}
+
 static void install_css(void)
 {
     static gboolean installed;
@@ -310,7 +409,13 @@ static void install_css(void)
     /* The GNOME accent colour lights the caller while they speak. */
     gtk_css_provider_load_from_string(css,
         "avatar.speaking { box-shadow: 0 0 0 3px @accent_bg_color; }"
-        "label.speaking { color: @accent_color; }");
+        "label.speaking { color: @accent_color; }"
+        "button.call-answer { background-color: #187833; background-image: none; color: #fff; }"
+        "button.call-answer:hover { background-color: #1b803a; }"
+        "button.call-answer:active { background-color: #14652b; }"
+        "button.call-decline { background-color: #c01c28; background-image: none; color: #fff; }"
+        "button.call-decline:hover { background-color: #d02030; }"
+        "button.call-decline:active { background-color: #a01824; }");
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(css),
                                                GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
     g_object_unref(css);
@@ -378,12 +483,49 @@ MockCallPopup *mock_call_popup_new(GtkApplication *app, MockCallPopupAction acti
     gtk_box_append(GTK_BOX(popup->details), popup->keypad);
     gtk_box_append(GTK_BOX(body), popup->details);
 
+    popup->waiting = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_widget_set_name(popup->waiting, "waiting-banner");
+    GtkWidget *waiting_top = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    popup->waiting_caller = label("", "heading");
+    gtk_widget_set_name(popup->waiting_caller, "waiting-caller");
+    gtk_widget_set_hexpand(popup->waiting_caller, TRUE);
+    gtk_label_set_ellipsize(GTK_LABEL(popup->waiting_caller), PANGO_ELLIPSIZE_END);
+    gtk_box_append(GTK_BOX(waiting_top), popup->waiting_caller);
+    GtkWidget *waiting_status = label("Waiting", "dim-label");
+    gtk_widget_set_name(waiting_status, "waiting-status");
+    gtk_box_append(GTK_BOX(waiting_top), waiting_status);
+    gtk_box_append(GTK_BOX(popup->waiting), waiting_top);
+    GtkWidget *waiting_actions = gtk_grid_new(); /* Two by two: four labels don't fit one 360 px row. */
+    gtk_grid_set_row_spacing(GTK_GRID(waiting_actions), 6);
+    gtk_grid_set_column_spacing(GTK_GRID(waiting_actions), 6);
+    gtk_grid_set_column_homogeneous(GTK_GRID(waiting_actions), TRUE);
+    GtkWidget *waiting_ignore = action_button(popup, "Ignore", NULL, "waiting-ignore", "");
+    g_object_set_data(G_OBJECT(waiting_ignore), "mock-action", "ignore-waiting");
+    gtk_grid_attach(GTK_GRID(waiting_actions), waiting_ignore, 0, 0, 1, 1);
+    popup->waiting_decline = action_button(popup, "Decline", NULL, "waiting-decline", "");
+    g_object_set_data(G_OBJECT(popup->waiting_decline), "mock-action", "end-line");
+    gtk_widget_add_css_class(popup->waiting_decline, "call-decline");
+    gtk_grid_attach(GTK_GRID(waiting_actions), popup->waiting_decline, 1, 0, 1, 1);
+    popup->release_answer = action_button(popup, "End & Accept", NULL, "release-and-answer", "");
+    gtk_grid_attach(GTK_GRID(waiting_actions), popup->release_answer, 0, 1, 1, 1);
+    popup->hold_answer = action_button(popup, "Hold & Accept", NULL, "hold-and-answer", "");
+    gtk_widget_add_css_class(popup->hold_answer, "call-answer");
+    gtk_grid_attach(GTK_GRID(waiting_actions), popup->hold_answer, 1, 1, 1, 1);
+    gtk_box_append(GTK_BOX(popup->waiting), waiting_actions);
+    gtk_box_append(GTK_BOX(body), popup->waiting);
+
+    popup->call_list = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_widget_set_name(popup->call_list, "call-list");
+    gtk_box_append(GTK_BOX(body), popup->call_list);
+
     popup->incoming = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_set_name(popup->incoming, "incoming-actions");
     gtk_box_append(GTK_BOX(popup->incoming), action_button(popup, "Ignore", NULL, "ignore", ""));
-    gtk_box_append(GTK_BOX(popup->incoming), action_button(popup, "Decline", NULL, "decline", ""));
+    GtkWidget *decline = action_button(popup, "Decline", NULL, "decline", "");
+    gtk_widget_add_css_class(decline, "call-decline");
+    gtk_box_append(GTK_BOX(popup->incoming), decline);
     GtkWidget *answer = action_button(popup, "Answer", NULL, "answer", "");
-    gtk_widget_add_css_class(answer, "suggested-action");
+    gtk_widget_add_css_class(answer, "call-answer");
     gtk_box_append(GTK_BOX(popup->incoming), answer);
     gtk_box_append(GTK_BOX(body), popup->incoming);
 
@@ -397,8 +539,7 @@ MockCallPopup *mock_call_popup_new(GtkApplication *app, MockCallPopupAction acti
 
     popup->active = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_set_name(popup->active, "active-actions");
-    popup->mute_button = action_button(popup, "Mute", "microphone-sensitivity-high-symbolic", "mute", "");
-    popup->mute_content = labeled(popup->mute_button, "microphone-sensitivity-high-symbolic", "Mute");
+    popup->mute_button = action_button(popup, "Mute", "audio-input-microphone-symbolic", "mute", "");
     gtk_box_append(GTK_BOX(popup->active), popup->mute_button);
     popup->audio_button = make_audio(popup);
     popup->audio_content = labeled(popup->audio_button, "audio-speakers-symbolic", "Audio");
@@ -426,6 +567,10 @@ MockCallPopup *mock_call_popup_new(GtkApplication *app, MockCallPopupAction acti
     gtk_box_append(GTK_BOX(popup->call_management), popup->hold_button);
     gtk_box_append(GTK_BOX(popup->call_management), popup->resume_button);
     gtk_box_append(GTK_BOX(popup->call_management), popup->merge_button);
+    popup->swap_button = action_button(popup, "Swap", NULL, "swap", "");
+    gtk_box_append(GTK_BOX(popup->call_management), popup->swap_button);
+    popup->add_call_button = action_button(popup, "Add call", NULL, "add-call", "");
+    gtk_box_append(GTK_BOX(popup->call_management), popup->add_call_button);
     gtk_box_append(GTK_BOX(body), popup->call_management);
 
     popup->terminal = label("", "heading");
@@ -453,11 +598,31 @@ void mock_call_popup_update(MockCallPopup *popup, const MockUiModel *model)
     gtk_widget_set_visible(popup->incoming, incoming);
     gtk_widget_set_visible(popup->outgoing, outgoing);
     gtk_widget_set_visible(popup->active, active);
-    gtk_widget_set_visible(popup->call_management, active &&
-                           (model->can_hold || model->can_resume || model->can_merge));
+    gtk_widget_set_visible(popup->call_management, active && (model->can_hold || model->can_resume ||
+                           model->can_merge || model->can_swap || model->can_add_call));
     gtk_widget_set_visible(popup->hold_button, active && model->can_hold);
-    gtk_widget_set_visible(popup->resume_button, active && model->can_resume);
+    gtk_widget_set_visible(popup->resume_button, active && model->can_resume && !model->can_swap); /* Swap resumes too. */
     gtk_widget_set_visible(popup->merge_button, active && model->can_merge);
+    gtk_widget_set_visible(popup->swap_button, active && model->can_swap);
+    gtk_widget_set_visible(popup->add_call_button, active && model->can_add_call);
+    const MockLine *waiting = NULL;
+    gboolean conference = FALSE;
+    for (unsigned i = 0; i < model->call_count; i++) {
+        if (strcmp(model->lines[i].id, model->waiting_call_id) == 0) waiting = &model->lines[i];
+        conference |= model->lines[i].multiparty;
+    }
+    gtk_widget_set_visible(popup->waiting, active && model->waiting_visible && waiting);
+    if (waiting) {
+        gtk_label_set_text(GTK_LABEL(popup->waiting_caller), line_caller(waiting));
+        set_argument(popup->waiting_decline, waiting->id);
+        set_argument(popup->hold_answer, waiting->id);
+        set_argument(popup->release_answer, waiting->id);
+    }
+    gtk_widget_set_visible(popup->hold_answer, model->can_hold_and_answer);
+    gtk_widget_set_visible(popup->release_answer, model->can_release_and_answer);
+    render_calls(popup, model);
+    gtk_widget_set_visible(popup->call_list, (active || outgoing) && !model->compact &&
+                           (model->call_count >= 2 || conference));
     gtk_widget_set_visible(popup->mute_button, !model->live || model->call_audio);
     /* No audio routing backend yet. */
     gtk_widget_set_visible(popup->audio_button, !model->live);
@@ -496,11 +661,9 @@ void mock_call_popup_update(MockCallPopup *popup, const MockUiModel *model)
     gtk_label_set_text(GTK_LABEL(popup->terminal), model->call == MOCK_CALL_DECLINED ? "Call Declined" :
                        model->call == MOCK_CALL_ENDING ? "Ending call…" : "Call Ended");
     gtk_widget_set_tooltip_text(popup->mute_button, model->muted ? "Unmute" : "Mute");
-    adw_button_content_set_icon_name(ADW_BUTTON_CONTENT(popup->mute_content),
-                                     model->muted ? "microphone-sensitivity-muted-symbolic" :
-                                     "microphone-sensitivity-high-symbolic");
-    adw_button_content_set_label(ADW_BUTTON_CONTENT(popup->mute_content),
-                                 model->compact ? "" : model->muted ? "Unmute" : "Mute");
+    gtk_button_set_icon_name(GTK_BUTTON(popup->mute_button),
+                             model->muted ? "microphone-sensitivity-muted-symbolic" :
+                             "audio-input-microphone-symbolic");
     adw_button_content_set_label(ADW_BUTTON_CONTENT(popup->audio_content), model->compact ? "" : "Audio");
     const char *end_label = active && model->can_end_conference ? "End conference" : "End call";
     g_object_set_data(G_OBJECT(popup->end_button), "mock-action",

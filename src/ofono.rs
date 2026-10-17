@@ -236,41 +236,53 @@ impl OfonoBackend {
         if !valid_number(number) {
             return Err(OfonoError::InvalidNumber);
         }
-        let calls = self.calls()?;
-        if calls.len() != 1 || calls[0].state != "active" || calls[0].multiparty {
-            return Err(OfonoError::StaleCall);
-        }
+        self.require(can_add_call)?;
         let path: OwnedObjectPath = self.call_manager()?.call("Dial", &(number, "default"))?;
         Ok(path.to_string())
     }
 
+    pub fn swap(&self) -> Result<(), OfonoError> {
+        self.require(can_swap)?;
+        self.call_manager()?.call("SwapCalls", &()).map_err(Into::into)
+    }
+
     pub fn merge(&self) -> Result<(), OfonoError> {
-        let calls = self.calls()?;
-        if calls.len() != 2 || calls.iter().any(|call| call.multiparty)
-            || calls.iter().filter(|call| call.state == "active").count() != 1
-            || calls.iter().filter(|call| call.state == "held").count() != 1 {
-            return Err(OfonoError::StaleCall);
-        }
+        self.require(can_merge)?;
         let _: Vec<OwnedObjectPath> = self.call_manager()?.call("CreateMultiparty", &())?;
         Ok(())
     }
 
     pub fn end_conference(&self) -> Result<(), OfonoError> {
-        let calls = self.calls()?;
-        if calls.len() < 2 || calls.iter().any(|call| !call.multiparty || call.state != "active") {
-            return Err(OfonoError::StaleCall);
-        }
+        self.require(can_end_conference)?;
         self.call_manager()?.call("HangupMultiparty", &()).map_err(Into::into)
     }
 
     pub fn end_call(&self, call_id: &str) -> Result<(), OfonoError> {
-        let calls = self.calls()?;
-        if calls.iter().any(|call| call.multiparty)
-            || !calls.iter().any(|call| call.path == call_id && matches!(call.state.as_str(), "active" | "held" | "dialing" | "alerting")) {
-            return Err(OfonoError::StaleCall);
-        }
+        self.require(|calls| can_end_call(calls, call_id))?;
         let call = Proxy::new(&self.connection, "org.ofono", call_id, "org.ofono.VoiceCall")?;
         call.call("Hangup", &()).map_err(Into::into)
+    }
+
+    pub fn private_chat(&self, call_id: &str) -> Result<(), OfonoError> {
+        self.require(|calls| can_private_chat(calls, call_id))?;
+        let path = OwnedObjectPath::try_from(call_id).map_err(|_| OfonoError::StaleCall)?;
+        let _: Vec<OwnedObjectPath> = self.call_manager()?.call("PrivateChat", &(path,))?;
+        Ok(())
+    }
+
+    pub fn hold_and_answer(&self, call_id: &str) -> Result<(), OfonoError> {
+        self.require(|calls| can_hold_and_answer(calls, call_id))?;
+        self.call_manager()?.call("HoldAndAnswer", &()).map_err(Into::into)
+    }
+
+    pub fn release_and_answer(&self, call_id: &str) -> Result<(), OfonoError> {
+        self.require(|calls| can_release_and_answer(calls, call_id))?;
+        self.call_manager()?.call("ReleaseAndAnswer", &()).map_err(Into::into)
+    }
+
+    /// Re-reads oFono so every multi-call action is judged against the phone's current calls.
+    fn require(&self, eligible: impl FnOnce(&[OfonoCall]) -> bool) -> Result<(), OfonoError> {
+        if eligible(&self.calls()?) { Ok(()) } else { Err(OfonoError::StaleCall) }
     }
 
     fn swap_target(&self, call_id: &str, state: &str) -> Result<(), OfonoError> {
@@ -308,6 +320,67 @@ impl OfonoBackend {
         )
         .map_err(Into::into)
     }
+}
+
+fn count(calls: &[OfonoCall], state: &str) -> usize {
+    calls.iter().filter(|call| call.state == state).count()
+}
+
+/// Every call is active or held, with at least one of each.
+fn active_and_held(calls: &[OfonoCall]) -> bool {
+    count(calls, "active") > 0 && count(calls, "held") > 0
+        && calls.iter().all(|call| matches!(call.state.as_str(), "active" | "held"))
+}
+
+/// One call, or one whole conference, all active; HFP conferences hold at most five calls.
+fn can_add_call(calls: &[OfonoCall]) -> bool {
+    (1..5).contains(&calls.len()) && count(calls, "active") == calls.len()
+        && (calls.len() == 1 || calls.iter().all(|call| call.multiparty))
+}
+
+/// Each side is one plain call or only conference members.
+fn can_swap(calls: &[OfonoCall]) -> bool {
+    let side = |state| {
+        let members: Vec<_> = calls.iter().filter(|call| call.state == state).collect();
+        members.len() == 1 || members.iter().all(|call| call.multiparty)
+    };
+    active_and_held(calls) && side("active") && side("held")
+}
+
+fn can_merge(calls: &[OfonoCall]) -> bool {
+    active_and_held(calls) && calls.len() <= 5
+}
+
+/// An active conference; a separate held call may remain.
+fn can_end_conference(calls: &[OfonoCall]) -> bool {
+    calls.iter().filter(|call| call.multiparty).count() >= 2
+        && calls.iter().all(|call| if call.multiparty { call.state == "active" } else { call.state == "held" })
+}
+
+/// Hangup releases one participant, conference members included, or rejects a waiting call.
+fn can_end_call(calls: &[OfonoCall], id: &str) -> bool {
+    calls.iter().any(|call| call.path == id
+        && matches!(call.state.as_str(), "active" | "held" | "dialing" | "alerting" | "waiting"))
+}
+
+fn can_private_chat(calls: &[OfonoCall], id: &str) -> bool {
+    calls.len() >= 2 && calls.iter().all(|call| call.multiparty && call.state == "active")
+        && calls.iter().any(|call| call.path == id)
+}
+
+/// `id` is the only waiting call and nothing else is ringing or being dialed.
+fn answerable_waiting(calls: &[OfonoCall], id: &str) -> bool {
+    count(calls, "waiting") == 1
+        && calls.iter().any(|call| call.path == id && call.state == "waiting")
+        && !calls.iter().any(|call| matches!(call.state.as_str(), "incoming" | "dialing" | "alerting"))
+}
+
+fn can_hold_and_answer(calls: &[OfonoCall], id: &str) -> bool {
+    answerable_waiting(calls, id) && count(calls, "held") == 0
+}
+
+fn can_release_and_answer(calls: &[OfonoCall], id: &str) -> bool {
+    answerable_waiting(calls, id)
 }
 
 fn decode_call(path: OwnedObjectPath, properties: Properties) -> Result<OfonoCall, OfonoError> {
@@ -458,11 +531,50 @@ mod tests {
         }
     }
 
+    struct ReadinessManager(Arc<Mutex<(bool, bool, bool)>>);
+
+    #[zbus::interface(name = "org.ofono.Manager")]
+    impl ReadinessManager {
+        fn get_modems(&self) -> Objects {
+            let (powered, online, voice_calls) = *self.0.lock().unwrap();
+            let interfaces = if voice_calls { vec!["org.ofono.VoiceCallManager"] } else { Vec::new() };
+            vec![(
+                OwnedObjectPath::try_from("/test_modem").unwrap(),
+                HashMap::from([
+                    ("Powered".to_owned(), OwnedValue::from(powered)),
+                    ("Online".to_owned(), OwnedValue::from(online)),
+                    ("Interfaces".to_owned(), OwnedValue::try_from(Value::from(interfaces)).unwrap()),
+                ]),
+            )]
+        }
+    }
+
+    #[test]
+    fn phone_is_ready_only_after_power_online_and_call_interface_are_available() {
+        let (_bus, address) = PrivateBus::start();
+        let readiness = Arc::new(Mutex::new((false, false, false)));
+        let _server = Builder::address(address.as_str()).unwrap()
+            .name("org.ofono").unwrap()
+            .serve_at("/", ReadinessManager(readiness.clone())).unwrap()
+            .serve_at("/test_modem", MockCalls(Arc::new(Mutex::new(MockState::default())))).unwrap()
+            .build().unwrap();
+        let client = Builder::address(address.as_str()).unwrap().build().unwrap();
+        for state in [(false, false, false), (false, true, true), (true, false, true), (true, true, false)] {
+            *readiness.lock().unwrap() = state;
+            assert!(matches!(OfonoBackend::connect_on(client.clone()), Err(OfonoError::NoReadyModem)));
+        }
+        *readiness.lock().unwrap() = (true, true, true);
+        let backend = OfonoBackend::connect_on(client).unwrap();
+        assert_eq!(backend.snapshot(), Ok(Observation::Idle));
+    }
+
     #[derive(Default)]
     struct MockState {
         call_state: Option<&'static str>,
         second_state: Option<&'static str>,
         multiparty: bool,
+        /// Calls three and up: (state, multiparty).
+        more: Vec<(&'static str, bool)>,
         commands: Vec<&'static str>,
     }
 
@@ -482,7 +594,25 @@ mod tests {
                 properties.insert("Multiparty".into(), OwnedValue::from(state.multiparty));
                 calls.push((OwnedObjectPath::try_from("/test_modem/call2").unwrap(), properties));
             }
+            for (index, (phase, multiparty)) in state.more.iter().enumerate() {
+                let mut properties = call_properties(phase);
+                properties.insert("Multiparty".into(), OwnedValue::from(*multiparty));
+                calls.push((OwnedObjectPath::try_from(format!("/test_modem/call{}", index + 3)).unwrap(), properties));
+            }
             calls
+        }
+
+        fn hold_and_answer(&self) {
+            self.0.lock().unwrap().commands.push("HoldAndAnswer");
+        }
+
+        fn release_and_answer(&self) {
+            self.0.lock().unwrap().commands.push("ReleaseAndAnswer");
+        }
+
+        fn private_chat(&self, _call: OwnedObjectPath) -> Vec<OwnedObjectPath> {
+            self.0.lock().unwrap().commands.push("PrivateChat");
+            vec![OwnedObjectPath::try_from("/test_modem/call2").unwrap()]
         }
 
         fn swap_calls(&self) {
@@ -621,7 +751,7 @@ mod tests {
     }
 
     #[test]
-    fn adding_a_call_requires_one_active_call_and_valid_number() {
+    fn adding_a_call_requires_only_active_calls_and_valid_number() {
         let (_bus, address) = PrivateBus::start();
         let state = Arc::new(Mutex::new(MockState { call_state: Some("active"), ..Default::default() }));
         let _server = Builder::address(address.as_str()).unwrap()
@@ -635,11 +765,14 @@ mod tests {
         backend.add_call("123").unwrap();
         state.lock().unwrap().second_state = Some("waiting");
         assert_eq!(backend.add_call("456"), Err(OfonoError::StaleCall));
-        assert_eq!(state.lock().unwrap().commands, ["Dial"]);
+        // A whole active conference may add a call too.
+        { let mut state = state.lock().unwrap(); state.second_state = Some("active"); state.multiparty = true; }
+        backend.add_call("789").unwrap();
+        assert_eq!(state.lock().unwrap().commands, ["Dial", "Dial"]);
     }
 
     #[test]
-    fn merge_requires_one_active_and_one_held_call() {
+    fn merge_requires_only_active_and_held_calls() {
         let (_bus, address) = PrivateBus::start();
         let state = Arc::new(Mutex::new(MockState { call_state: Some("active"), second_state: Some("waiting"), ..Default::default() }));
         let _server = Builder::address(address.as_str()).unwrap()
@@ -652,7 +785,10 @@ mod tests {
         assert_eq!(backend.merge(), Err(OfonoError::StaleCall));
         state.lock().unwrap().second_state = Some("held");
         backend.merge().unwrap();
-        assert_eq!(state.lock().unwrap().commands, ["CreateMultiparty"]);
+        // An active conference merges a further held call.
+        { let mut state = state.lock().unwrap(); state.second_state = Some("active"); state.multiparty = true; state.more = vec![("held", false)]; }
+        backend.merge().unwrap();
+        assert_eq!(state.lock().unwrap().commands, ["CreateMultiparty", "CreateMultiparty"]);
     }
 
     #[test]
@@ -669,11 +805,16 @@ mod tests {
         assert_eq!(backend.end_conference(), Err(OfonoError::StaleCall));
         state.lock().unwrap().multiparty = true;
         backend.end_conference().unwrap();
-        assert_eq!(state.lock().unwrap().commands, ["HangupMultiparty"]);
+        // A separate held call may remain; a held conference cannot be ended from here.
+        state.lock().unwrap().more = vec![("held", false)];
+        backend.end_conference().unwrap();
+        { let mut state = state.lock().unwrap(); state.call_state = Some("held"); state.second_state = Some("held"); state.more = vec![("active", false)]; }
+        assert_eq!(backend.end_conference(), Err(OfonoError::StaleCall));
+        assert_eq!(state.lock().unwrap().commands, ["HangupMultiparty", "HangupMultiparty"]);
     }
 
     #[test]
-    fn end_call_targets_only_a_current_nonconference_participant() {
+    fn end_call_targets_one_current_participant_including_conference_members() {
         let (_bus, address) = PrivateBus::start();
         let state = Arc::new(Mutex::new(MockState { call_state: Some("held"), second_state: Some("dialing"), ..Default::default() }));
         let _server = Builder::address(address.as_str()).unwrap()
@@ -688,8 +829,131 @@ mod tests {
         assert_eq!(backend.end_call("/test_modem/old"), Err(OfonoError::StaleCall));
         backend.end_call("/test_modem/call2").unwrap();
         state.lock().unwrap().multiparty = true;
-        assert_eq!(backend.end_call("/test_modem/call1"), Err(OfonoError::StaleCall));
-        assert_eq!(state.lock().unwrap().commands, ["Hangup"]);
+        backend.end_call("/test_modem/call1").unwrap();
+        // A waiting call is rejected with Hangup; a ringing call is declined through Decline instead.
+        { let mut state = state.lock().unwrap(); state.multiparty = false; state.call_state = Some("active"); state.second_state = Some("waiting"); }
+        backend.end_call("/test_modem/call2").unwrap();
+        state.lock().unwrap().second_state = Some("incoming");
+        assert_eq!(backend.end_call("/test_modem/call2"), Err(OfonoError::StaleCall));
+        assert_eq!(state.lock().unwrap().commands, ["Hangup", "Hangup", "Hangup"]);
+    }
+
+    #[test]
+    fn waiting_swap_and_private_chat_send_their_ofono_commands() {
+        let (_bus, address) = PrivateBus::start();
+        let state = Arc::new(Mutex::new(MockState { call_state: Some("active"), second_state: Some("waiting"), ..Default::default() }));
+        let _server = Builder::address(address.as_str()).unwrap()
+            .name("org.ofono").unwrap()
+            .serve_at("/", MockManager).unwrap()
+            .serve_at("/test_modem", MockCalls(state.clone())).unwrap()
+            .build().unwrap();
+        let client = Builder::address(address.as_str()).unwrap().build().unwrap();
+        let backend = OfonoBackend::connect_on(client).unwrap();
+        assert_eq!(backend.hold_and_answer("/test_modem/call1"), Err(OfonoError::StaleCall));
+        backend.hold_and_answer("/test_modem/call2").unwrap();
+        backend.release_and_answer("/test_modem/call2").unwrap();
+        assert_eq!(backend.swap(), Err(OfonoError::StaleCall));
+        assert_eq!(backend.private_chat("/test_modem/call1"), Err(OfonoError::StaleCall));
+        state.lock().unwrap().second_state = Some("held");
+        backend.swap().unwrap();
+        { let mut state = state.lock().unwrap(); state.second_state = Some("active"); state.multiparty = true; }
+        backend.private_chat("/test_modem/call1").unwrap();
+        state.lock().unwrap().more = vec![("held", false)];
+        assert_eq!(backend.private_chat("/test_modem/call1"), Err(OfonoError::StaleCall));
+        assert_eq!(backend.hold_and_answer("/test_modem/call3"), Err(OfonoError::StaleCall));
+        assert_eq!(state.lock().unwrap().commands, ["HoldAndAnswer", "ReleaseAndAnswer", "SwapCalls", "PrivateChat"]);
+    }
+
+    fn listed(states: &[(&str, bool)]) -> Vec<OfonoCall> {
+        states.iter().enumerate().map(|(index, (state, multiparty))| OfonoCall {
+            path: format!("/c{}", index + 1), state: (*state).into(), multiparty: *multiparty, number: None, name: None,
+        }).collect()
+    }
+
+    const A: (&str, bool) = ("active", false);
+    const H: (&str, bool) = ("held", false);
+    const W: (&str, bool) = ("waiting", false);
+    const MA: (&str, bool) = ("active", true);
+    const MH: (&str, bool) = ("held", true);
+
+    #[test]
+    fn add_call_needs_one_active_call_or_one_active_conference_below_five() {
+        assert!(can_add_call(&listed(&[A])));
+        assert!(can_add_call(&listed(&[MA, MA, MA, MA])));
+        for calls in [&[][..], &[MA; 5], &[A, A], &[A, H], &[A, W], &[H], &[("dialing", false)], &[MA, MA, A], &[A, ("incoming", false)]] {
+            assert!(!can_add_call(&listed(calls)));
+        }
+    }
+
+    #[test]
+    fn swap_needs_one_active_and_one_held_side() {
+        for calls in [&[A, H][..], &[MA, MA, H], &[MH, MH, A], &[H, MA, MA]] {
+            assert!(can_swap(&listed(calls)));
+        }
+        for calls in [&[A][..], &[H], &[A, A], &[A, H, H], &[MA, A, H], &[A, W], &[A, H, W], &[A, ("alerting", false)]] {
+            assert!(!can_swap(&listed(calls)));
+        }
+    }
+
+    #[test]
+    fn merge_needs_active_and_held_calls_up_to_five() {
+        for calls in [&[A, H][..], &[MA, MA, H], &[MH, MH, A], &[MA, MA, MA, MA, H]] {
+            assert!(can_merge(&listed(calls)));
+        }
+        for calls in [&[A][..], &[A, A], &[MA, MA, MA, MA, MA, H], &[A, W], &[A, H, W], &[H, ("dialing", false)]] {
+            assert!(!can_merge(&listed(calls)));
+        }
+    }
+
+    #[test]
+    fn end_call_targets_any_current_participant_but_not_a_ringing_call() {
+        for (calls, id) in [(&[A][..], "/c1"), (&[H, ("dialing", false)], "/c2"), (&[("alerting", false)], "/c1"),
+                            (&[MA, MA, H], "/c2"), (&[MH, MH, A], "/c1"), (&[A, W], "/c2")] {
+            assert!(can_end_call(&listed(calls), id));
+        }
+        for (calls, id) in [(&[A][..], "/old"), (&[("incoming", false)], "/c1"), (&[("disconnected", false)], "/c1")] {
+            assert!(!can_end_call(&listed(calls), id));
+        }
+    }
+
+    #[test]
+    fn private_chat_needs_an_active_conference_and_nothing_else() {
+        assert!(can_private_chat(&listed(&[MA, MA]), "/c1"));
+        assert!(can_private_chat(&listed(&[MA, MA, MA]), "/c3"));
+        for (calls, id) in [(&[MA][..], "/c1"), (&[MA, MA, H], "/c1"), (&[MA, MH], "/c1"), (&[MH, MH], "/c1"),
+                            (&[A, H], "/c1"), (&[MA, MA], "/c3"), (&[MA, MA, W], "/c1")] {
+            assert!(!can_private_chat(&listed(calls), id));
+        }
+    }
+
+    #[test]
+    fn hold_and_answer_needs_the_only_waiting_call_and_no_held_call() {
+        assert!(can_hold_and_answer(&listed(&[A, W]), "/c2"));
+        assert!(can_hold_and_answer(&listed(&[MA, MA, W]), "/c3"));
+        for (calls, id) in [(&[A, W][..], "/c1"), (&[H, A, W], "/c3"), (&[A, W, W], "/c2"), (&[("incoming", false), W], "/c2"),
+                            (&[("dialing", false), W], "/c2"), (&[("alerting", false), W], "/c2"), (&[A], "/c1")] {
+            assert!(!can_hold_and_answer(&listed(calls), id));
+        }
+    }
+
+    #[test]
+    fn release_and_answer_needs_the_only_waiting_call_and_no_ringing_or_dialing_call() {
+        for (calls, id) in [(&[A, W][..], "/c2"), (&[H, A, W], "/c3"), (&[H, W], "/c2"), (&[MA, MA, W], "/c3")] {
+            assert!(can_release_and_answer(&listed(calls), id));
+        }
+        for (calls, id) in [(&[A, W][..], "/c1"), (&[A, W, W], "/c2"), (&[("incoming", false), W], "/c2"),
+                            (&[("dialing", false), W], "/c2"), (&[("alerting", false), W], "/c2")] {
+            assert!(!can_release_and_answer(&listed(calls), id));
+        }
+    }
+
+    #[test]
+    fn end_conference_needs_an_active_conference_and_only_a_held_call_beside_it() {
+        assert!(can_end_conference(&listed(&[MA, MA])));
+        assert!(can_end_conference(&listed(&[MA, MA, H])));
+        for calls in [&[MA][..], &[A, A], &[MH, MH], &[MH, MH, A], &[MA, MA, A], &[MA, MA, W]] {
+            assert!(!can_end_conference(&listed(calls)));
+        }
     }
 
     #[test]

@@ -37,7 +37,10 @@ void live_apply_snapshot(MockUiModel *model, const char *status, const char *id,
         return;
     }
     if (strcmp(model->call_id, id) != 0) {
-        mock_ui_finish_call(model);
+        gboolean shown = FALSE; /* A call already in the controller's list, e.g. a waiting call just answered. */
+        for (unsigned i = 0; model->call == MOCK_CALL_ACTIVE && i < model->call_count; i++)
+            shown |= strcmp(model->lines[i].id, id) == 0;
+        if (!shown) mock_ui_finish_call(model);
         g_strlcpy(model->call_id, id, sizeof model->call_id);
     }
     set_caller(model, caller, number);
@@ -68,56 +71,29 @@ void live_apply_snapshot(MockUiModel *model, const char *status, const char *id,
     }
 }
 
+static MockLinePhase line_phase(const char *phase)
+{
+    if (strcmp(phase, "active") == 0) return MOCK_LINE_ACTIVE;
+    if (strcmp(phase, "held") == 0) return MOCK_LINE_HELD;
+    if (strcmp(phase, "dialing") == 0 || strcmp(phase, "alerting") == 0) return MOCK_LINE_DIALING;
+    if (strcmp(phase, "waiting") == 0) return MOCK_LINE_WAITING;
+    if (strcmp(phase, "incoming") == 0) return MOCK_LINE_INCOMING;
+    return MOCK_LINE_OTHER;
+}
+
 void live_apply_calls(MockUiModel *model, const char *status, GVariant *rows)
 {
-    model->can_hold = model->can_resume = model->can_merge = false;
-    model->can_add_call = model->can_end_conference = false;
-    model->call_held = false;
     model->call_count = 0;
-    model->held_call_id[0] = '\0';
-    if (!status || strcmp(status, "ready") != 0 || !rows) return;
-    model->calls_unavailable = false;
-
-    GVariantIter iter;
-    const char *id, *phase, *audio, *caller, *number;
-    const char *selected_id = NULL, *selected_phase = NULL, *selected_caller = NULL, *selected_number = NULL;
-    int selected_priority = -1;
-    guint active = 0, held = 0, multiparty = 0;
-    gboolean group;
-    g_variant_iter_init(&iter, rows);
-    while (g_variant_iter_next(&iter, "(&s&s&s&s&sb)", &id, &phase, &audio,
-                               &caller, &number, &group)) {
-        (void)audio;
-        model->call_count++;
-        active += strcmp(phase, "active") == 0;
-        held += strcmp(phase, "held") == 0;
-        multiparty += group;
-        if (strcmp(phase, "held") == 0)
-            g_strlcpy(model->held_call_id, id, sizeof model->held_call_id);
-        int priority = strcmp(phase, "active") == 0 ? 3 :
-                       strcmp(phase, "dialing") == 0 || strcmp(phase, "alerting") == 0 ? 2 :
-                       strcmp(phase, "held") == 0 ? 1 : 0;
-        if (priority > selected_priority) {
-            selected_priority = priority;
-            selected_id = id;
-            selected_phase = phase;
-            selected_caller = caller;
-            selected_number = number;
-        }
+    if (status && strcmp(status, "ready") == 0 && rows) {
+        model->calls_unavailable = false;
+        GVariantIter iter;
+        const char *id, *phase, *audio, *caller, *number;
+        gboolean group;
+        g_variant_iter_init(&iter, rows);
+        while (g_variant_iter_next(&iter, "(&s&s&s&s&sb)", &id, &phase, &audio, &caller, &number, &group))
+            mock_ui_add_line(model, id, caller, number, line_phase(phase), group);
     }
-    model->can_hold = model->call_count == 1 && active == 1 && !multiparty;
-    model->can_resume = (model->call_count == 1 && held == 1) ||
-                        (model->call_count == 2 && active == 1 && held == 1 && !multiparty);
-    model->can_merge = model->call_count == 2 && active == 1 && held == 1 && !multiparty;
-    model->can_add_call = model->can_hold;
-    model->can_end_conference = model->call_count >= 2 &&
-                                multiparty == model->call_count && active == model->call_count;
-    model->call_held = model->call_count == 1 && held == 1;
-    if ((model->call_count > 1 || held == 1) && selected_id) {
-        g_strlcpy(model->call_id, selected_id, sizeof model->call_id);
-        set_caller(model, selected_caller, selected_number);
-        model->call = strcmp(selected_phase, "dialing") == 0 ? MOCK_CALL_OUTGOING : MOCK_CALL_ACTIVE;
-    }
+    mock_ui_derive_calls(model);
 }
 
 struct LiveData {

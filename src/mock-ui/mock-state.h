@@ -45,6 +45,26 @@ typedef struct {
     const char *description;
 } MockAudioDevice;
 
+typedef enum {
+    MOCK_LINE_ACTIVE,
+    MOCK_LINE_HELD,
+    MOCK_LINE_DIALING, /* Dialing or alerting. */
+    MOCK_LINE_WAITING,
+    MOCK_LINE_INCOMING,
+    MOCK_LINE_OTHER
+} MockLinePhase;
+
+/* ponytail: fixed cap of the phone's five calls plus one waiting; extra rows are dropped. */
+#define MOCK_LINES 6
+
+typedef struct {
+    char id[128];
+    char caller[128];
+    char number[64];
+    MockLinePhase phase;
+    bool multiparty;
+} MockLine;
+
 typedef struct {
     MockConnection connection;
     MockCall call;
@@ -56,8 +76,14 @@ typedef struct {
     bool can_merge;
     bool can_add_call;
     bool can_end_conference;
+    bool can_swap;
+    bool can_private; /* Any conference member may be split off. */
+    bool can_hold_and_answer;
+    bool can_release_and_answer;
+    bool waiting_visible; /* A waiting call the user has not ignored. */
     bool call_held;
-    unsigned call_count;
+    unsigned call_count; /* Rows in lines[]. */
+    MockLine lines[MOCK_LINES];
     unsigned elapsed_seconds;
     size_t audio_index;
     int caller_index; /* -1 means unknown caller. */
@@ -65,6 +91,8 @@ typedef struct {
     char caller_name[128]; /* Live SnapshotDetails label, retained across contact reloads. */
     char call_id[128]; /* Daemon call id in live mode. */
     char held_call_id[128];
+    char waiting_call_id[128];
+    char ignored_waiting_id[128];
     char battery[48];
     char sync_label[160];
     bool call_audio; /* Live: the daemon found this call's audio on the laptop, so Mute works. */
@@ -106,5 +134,16 @@ void mock_ui_tick(MockUiModel *model);
 void mock_ui_toggle_mute(MockUiModel *model);
 void mock_ui_set_compact(MockUiModel *model, bool compact);
 void mock_ui_select_audio(MockUiModel *model, size_t index);
+
+/* Per-call rows: append, then derive eligibility and the call the controller shows. */
+void mock_ui_add_line(MockUiModel *model, const char *id, const char *caller, const char *number,
+                      MockLinePhase phase, bool multiparty);
+void mock_ui_derive_calls(MockUiModel *model);
+void mock_ui_ignore_waiting(MockUiModel *model);
+/* Mock only: "waiting", "two-calls" or "conference" around an answered call. */
+void mock_ui_simulate_calls(MockUiModel *model, const char *scenario);
+/* Mock only: swap, merge, add (number), end, end-line, end-conference, private, hold-and-answer,
+ * release-and-answer (id). Returns false when the action does not apply. */
+bool mock_ui_calls_action(MockUiModel *model, const char *action, const char *id);
 
 #endif

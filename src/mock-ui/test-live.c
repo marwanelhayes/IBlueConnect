@@ -200,7 +200,127 @@ static void conference_has_explicit_end_control(void)
         " ('/two', 'active', 'laptop', 'B', '222', true)]"));
     live_apply_calls(&model, "ready", rows);
     assert(model.call_count == 2 && model.can_end_conference);
-    assert(!model.can_hold && !model.can_resume && !model.can_merge && !model.can_add_call);
+    assert(!model.can_hold && !model.can_resume && !model.can_merge && !model.can_swap);
+    assert(model.can_add_call && model.can_private); /* An all-active conference can grow or split. */
+    g_variant_unref(rows);
+}
+
+static GVariant *calls(const char *text)
+{
+    return g_variant_ref_sink(g_variant_new_parsed(text));
+}
+
+static void rows_are_kept_per_call(void)
+{
+    MockUiModel model = live_model();
+    GVariant *rows = calls("[('/a', 'active', 'laptop', 'A', '111', false),"
+                           " ('/b', 'held', 'laptop', '', '222', false),"
+                           " ('/c', 'alerting', 'laptop', 'C', '333', false)]");
+    live_apply_calls(&model, "ready", rows);
+    assert(model.call_count == 3);
+    assert(strcmp(model.lines[1].id, "/b") == 0 && model.lines[1].phase == MOCK_LINE_HELD);
+    assert(strcmp(model.lines[1].number, "222") == 0 && model.lines[1].caller[0] == '\0');
+    assert(model.lines[2].phase == MOCK_LINE_DIALING && !model.lines[2].multiparty);
+    assert(!model.can_swap && !model.can_merge && !model.can_add_call);
+    live_apply_calls(&model, "ready", NULL);
+    assert(model.call_count == 0);
+    g_variant_unref(rows);
+}
+
+static void swap_needs_one_call_or_one_conference_per_side(void)
+{
+    MockUiModel model = live_model();
+    GVariant *rows = calls("[('/a', 'active', 'laptop', 'A', '111', false),"
+                           " ('/b', 'held', 'laptop', 'B', '222', false)]");
+    live_apply_calls(&model, "ready", rows);
+    assert(model.can_swap && model.can_merge && !model.can_end_conference && !model.can_private);
+    g_variant_unref(rows);
+    rows = calls("[('/a', 'active', 'laptop', 'A', '111', true), ('/b', 'active', 'laptop', 'B', '222', true),"
+                 " ('/c', 'held', 'laptop', 'C', '333', false)]");
+    live_apply_calls(&model, "ready", rows);
+    assert(model.can_swap && model.can_merge && model.can_end_conference);
+    assert(!model.can_private && !model.can_add_call); /* Private needs the conference alone. */
+    g_variant_unref(rows);
+    rows = calls("[('/a', 'active', 'laptop', 'A', '111', false), ('/b', 'held', 'laptop', 'B', '222', false),"
+                 " ('/c', 'held', 'laptop', 'C', '333', false)]");
+    live_apply_calls(&model, "ready", rows);
+    assert(!model.can_swap && model.can_merge);
+    g_variant_unref(rows);
+}
+
+static void full_conference_cannot_add(void)
+{
+    MockUiModel model = live_model();
+    GVariant *rows = calls("[('/1', 'active', 'l', 'A', '1', true), ('/2', 'active', 'l', 'B', '2', true),"
+                           " ('/3', 'active', 'l', 'C', '3', true), ('/4', 'active', 'l', 'D', '4', true),"
+                           " ('/5', 'active', 'l', 'E', '5', true)]");
+    live_apply_calls(&model, "ready", rows);
+    assert(model.call_count == 5 && !model.can_add_call && model.can_end_conference);
+    g_variant_unref(rows);
+}
+
+/* Matches the daemon: Add call needs one call or one conference; End conference only beside held calls. */
+static void conference_controls_match_the_daemon(void)
+{
+    MockUiModel model = live_model();
+    GVariant *rows = calls("[('/1', 'active', 'l', 'A', '1', false), ('/2', 'active', 'l', 'B', '2', false)]");
+    live_apply_calls(&model, "ready", rows);
+    assert(!model.can_add_call);
+    g_variant_unref(rows);
+    rows = calls("[('/1', 'active', 'l', 'A', '1', true), ('/2', 'active', 'l', 'B', '2', true),"
+                 " ('/w', 'waiting', 'l', 'W', '9', false)]");
+    live_apply_calls(&model, "ready", rows);
+    assert(!model.can_end_conference && !model.can_private);
+    g_variant_unref(rows);
+    rows = calls("[('/1', 'active', 'l', 'A', '1', true), ('/2', 'active', 'l', 'B', '2', true),"
+                 " ('/h', 'held', 'l', 'H', '8', false)]");
+    live_apply_calls(&model, "ready", rows);
+    assert(model.can_end_conference && !model.can_private);
+    g_variant_unref(rows);
+}
+
+static void waiting_call_raises_banner_until_ignored(void)
+{
+    MockUiModel model = live_model();
+    live_apply_snapshot(&model, "ready", "/a", "active", "A", "111"); /* Answered on the phone: hidden. */
+    assert(model.call == MOCK_CALL_ACTIVE && !model.popup_visible);
+    GVariant *rows = calls("[('/a', 'active', 'laptop', 'A', '111', false),"
+                           " ('/w', 'waiting', 'laptop', 'W', '999', false)]");
+    live_apply_calls(&model, "ready", rows);
+    assert(model.popup_visible && model.waiting_visible);
+    assert(strcmp(model.waiting_call_id, "/w") == 0);
+    assert(strcmp(model.call_id, "/a") == 0);
+    assert(model.can_hold_and_answer && model.can_release_and_answer);
+    assert(!model.can_swap && !model.can_merge && !model.can_add_call);
+    mock_ui_ignore_waiting(&model);
+    assert(!model.waiting_visible && model.popup_visible); /* Ignore hides the banner only. */
+    live_apply_calls(&model, "ready", rows);
+    assert(!model.waiting_visible);
+    g_variant_unref(rows);
+    rows = calls("[('/a', 'active', 'laptop', 'A', '111', false), ('/b', 'held', 'laptop', 'B', '222', false),"
+                 " ('/v', 'waiting', 'laptop', 'V', '888', false)]");
+    live_apply_calls(&model, "ready", rows);
+    assert(model.waiting_visible && !model.can_hold_and_answer && model.can_release_and_answer);
+    g_variant_unref(rows);
+}
+
+static void answered_waiting_call_keeps_the_controller(void)
+{
+    MockUiModel model = live_model();
+    live_apply_snapshot(&model, "ready", "/a", "incoming", "A", "111");
+    mock_ui_answer(&model);
+    live_apply_snapshot(&model, "ready", "/a", "active", "A", "111");
+    GVariant *rows = calls("[('/a', 'active', 'laptop', 'A', '111', false),"
+                           " ('/w', 'waiting', 'laptop', 'W', '999', false)]");
+    live_apply_calls(&model, "ready", rows);
+    assert(strcmp(model.call_id, "/a") == 0 && model.waiting_visible);
+    g_variant_unref(rows);
+    /* End & Accept: the snapshot names the answered call before the call list does. */
+    live_apply_snapshot(&model, "ready", "/w", "active", "W", "999");
+    assert(model.call == MOCK_CALL_ACTIVE && model.popup_visible && strcmp(model.call_id, "/w") == 0);
+    rows = calls("[('/w', 'active', 'laptop', 'W', '999', false)]");
+    live_apply_calls(&model, "ready", rows);
+    assert(model.call == MOCK_CALL_ACTIVE && model.popup_visible && model.can_hold && model.can_add_call);
     g_variant_unref(rows);
 }
 
@@ -286,6 +406,12 @@ int main(void)
     held_call_keeps_controller_for_resume();
     resumed_call_keeps_its_controller();
     added_dialing_call_is_the_current_call();
+    rows_are_kept_per_call();
+    swap_needs_one_call_or_one_conference_per_side();
+    full_conference_cannot_add();
+    conference_controls_match_the_daemon();
+    waiting_call_raises_banner_until_ignored();
+    answered_waiting_call_keeps_the_controller();
     daemon_lists_become_ui_data(); /* Last: it replaces the global data set. */
     return 0;
 }

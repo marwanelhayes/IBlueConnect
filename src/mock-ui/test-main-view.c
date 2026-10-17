@@ -232,6 +232,25 @@ static void default_window_keeps_keypad_visible(void)
     g_object_unref(app);
 }
 
+static void add_call_opens_the_keypad(void)
+{
+    MockUiModel model;
+    mock_ui_init(&model);
+    model.live = true;
+    model.call_count = 3; /* An all-active conference can still add a call. */
+    model.can_add_call = true;
+    GtkApplication *app = gtk_application_new("org.iblueconnect.MockAddCallTest", 0);
+    g_application_register(G_APPLICATION(app), NULL, NULL);
+    GtkWidget *window = mock_main_window_new(app, &model, NULL, NULL);
+    GtkWidget *pages = find_pages(window);
+    g_assert_cmpstr(adw_view_stack_get_visible_child_name(ADW_VIEW_STACK(pages)), !=, "dial");
+    mock_main_window_show_dial(window);
+    g_assert_cmpstr(adw_view_stack_get_visible_child_name(ADW_VIEW_STACK(pages)), ==, "dial");
+    g_assert_nonnull(find_button(window, "Add call"));
+    gtk_window_destroy(GTK_WINDOW(window));
+    g_object_unref(app);
+}
+
 static void contacts_adapt_to_window_width(void)
 {
     MockUiModel model;
@@ -448,6 +467,42 @@ static GtkWidget *find_type(GtkWidget *root, GType type)
     return NULL;
 }
 
+static void title_is_centered(void)
+{
+    MockUiModel model;
+    mock_ui_init(&model);
+    GtkApplication *app = gtk_application_new("org.iblueconnect.MockTitleTest", 0);
+    g_application_register(G_APPLICATION(app), NULL, NULL);
+    for (int live = 0; live <= 1; live++) {
+        model.live = live;
+        GtkWidget *window = mock_main_window_new(app, &model, NULL, NULL);
+        GtkWidget *header = find_type(window, ADW_TYPE_HEADER_BAR);
+        adw_header_bar_set_decoration_layout(ADW_HEADER_BAR(header), ":minimize,maximize,close");
+        gtk_window_present(GTK_WINDOW(window));
+        for (int i = 0; i < 50; i++) {
+            while (g_main_context_iteration(NULL, FALSE));
+            g_usleep(1000);
+        }
+        GtkWidget *title = find_label(header, "IBlueConnect");
+        g_assert_nonnull(title);
+        g_assert_true(gtk_widget_get_mapped(title));
+        g_assert_cmpint(gtk_widget_get_width(window), <=, 500);
+        graphene_rect_t bounds;
+        g_assert_true(gtk_widget_compute_bounds(title, window, &bounds));
+        PangoRectangle ink;
+        pango_layout_get_pixel_extents(gtk_label_get_layout(GTK_LABEL(title)), &ink, NULL);
+        int x, y;
+        gtk_label_get_layout_offsets(GTK_LABEL(title), &x, &y);
+        double center = bounds.origin.x + x + ink.x + ink.width / 2.0;
+        double midpoint = gtk_widget_get_width(window) / 2.0;
+        g_test_message("live=%d window midpoint=%.1f title box center=%.1f text center=%.1f",
+                       live, midpoint, bounds.origin.x + bounds.size.width / 2.0, center);
+        g_assert_cmpfloat(ABS(center - midpoint), <=, 2);
+        gtk_window_destroy(GTK_WINDOW(window));
+    }
+    g_object_unref(app);
+}
+
 static void comfortable_proportions(void)
 {
     MockUiModel model;
@@ -552,6 +607,7 @@ int main(int argc, char **argv)
     g_test_add_func("/main/connection-states", connection_states);
     g_test_add_func("/main/search-dial-empty", search_dial_and_empty_states);
     g_test_add_func("/main/default-keypad", default_window_keeps_keypad_visible);
+    g_test_add_func("/main/add-call-keypad", add_call_opens_the_keypad);
     g_test_add_func("/main/adaptive-contacts", contacts_adapt_to_window_width);
     g_test_add_func("/main/search-number", home_search_calls_typed_number);
     g_test_add_func("/main/contact-details", contact_details);
@@ -559,6 +615,7 @@ int main(int argc, char **argv)
     g_test_add_func("/main/preferences", preferences);
     g_test_add_func("/main/keyboard-shortcuts", keyboard_shortcuts);
     g_test_add_func("/main/proportions", comfortable_proportions);
+    g_test_add_func("/main/title-centered", title_is_centered);
     g_test_add_func("/main/live-mode", live_mode_hides_mock_controls);
     g_test_add_func("/main/utf8-sections", non_ascii_names_get_letter_sections);
     return g_test_run();

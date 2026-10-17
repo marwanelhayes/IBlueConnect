@@ -306,13 +306,27 @@ static void popup_action(const char *action, const char *argument, gpointer data
             call_daemon(app, "Merge", NULL, on_call_reply);
         else if (strcmp(action, "end-conference") == 0 && app->model.can_end_conference)
             call_daemon(app, "EndConference", NULL, on_call_reply);
+        else if (strcmp(action, "swap") == 0 && app->model.can_swap)
+            call_daemon(app, "Swap", NULL, on_call_reply);
+        else if (strcmp(action, "end-line") == 0 && argument && *argument)
+            call_daemon(app, "EndCall", g_variant_new("(s)", argument), on_call_reply);
+        else if (strcmp(action, "private") == 0 && argument && *argument && app->model.can_private)
+            call_daemon(app, "PrivateChat", g_variant_new("(s)", argument), on_call_reply);
+        else if (strcmp(action, "hold-and-answer") == 0 && app->model.can_hold_and_answer)
+            call_daemon(app, "HoldAndAnswer", g_variant_new("(s)", app->model.waiting_call_id), on_call_reply);
+        else if (strcmp(action, "release-and-answer") == 0 && app->model.can_release_and_answer)
+            call_daemon(app, "ReleaseAndAnswer", g_variant_new("(s)", app->model.waiting_call_id), on_call_reply);
         else if (strcmp(action, "mute") == 0 && app->model.call_audio)
             call_daemon(app, "SetMuted", g_variant_new("(b)", !app->model.muted), on_muted);
         else if (strcmp(action, "tone") == 0 && argument && app->model.call == MOCK_CALL_ACTIVE && !app->model.call_held)
             call_daemon(app, "SendTone", g_variant_new("(ss)", id, argument), on_ignored_reply);
     }
-    if (strcmp(action, "ignore") == 0)
+    if (!app->model.live && mock_ui_calls_action(&app->model, action, argument))
+        ; /* Mock call rows changed. */
+    else if (strcmp(action, "ignore") == 0)
         mock_ui_ignore(&app->model);
+    else if (strcmp(action, "ignore-waiting") == 0)
+        mock_ui_ignore_waiting(&app->model); /* Hides the banner only; the phone keeps ringing. */
     else if (strcmp(action, "decline") == 0)
         mock_ui_decline(&app->model);
     else if (strcmp(action, "answer") == 0)
@@ -329,6 +343,10 @@ static void popup_action(const char *action, const char *argument, gpointer data
         app->model.popup_visible = false;
     else if (strcmp(action, "open-app") == 0)
         activate(G_APPLICATION(app->application), app);
+    else if (strcmp(action, "add-call") == 0) {
+        activate(G_APPLICATION(app->application), app);
+        if (app->main_window) mock_main_window_show_dial(app->main_window);
+    }
     /* Keypad tones are visual mock interactions until a call backend exists. */
     refresh_popup(app);
 }
@@ -359,6 +377,10 @@ static void main_action(MockMainAction action, int contact_index,
     }
     switch (action) {
     case MOCK_MAIN_CALL:
+        if (!value && contact_index >= 0 && (size_t)contact_index < mock_contacts_count)
+            value = mock_contacts[contact_index].numbers[0];
+        if (app->model.call_count && mock_ui_calls_action(&app->model, "add", value))
+            break;
         if (contact_index < 0 && value)
             mock_ui_dial_number(&app->model, value);
         else
@@ -487,6 +509,9 @@ static void open_developer(MockApp *app)
     add_developer_button(box, "incoming", "Simulate Incoming Call", app);
     add_developer_button(box, "unknown", "Simulate Unknown Caller", app);
     add_developer_button(box, "outgoing", "Simulate Outgoing Call", app);
+    add_developer_button(box, "waiting-call", "Simulate Call Waiting", app);
+    add_developer_button(box, "two-calls", "Simulate Two Calls", app);
+    add_developer_button(box, "conference", "Simulate Conference", app);
     add_developer_button(box, "call-connected", "Simulate Call Connected", app);
     add_developer_button(box, "caller-hung-up", "Simulate Caller Hung Up", app);
     add_developer_button(box, "connection-error", "Simulate Connection Error", app);
@@ -538,6 +563,8 @@ static void activate(GApplication *application, gpointer data)
                 mock_ui_set_compact(&app->model, true);
         } else if (strcmp(app->preview, "outgoing") == 0)
             mock_ui_outgoing(&app->model, 0);
+        else
+            mock_ui_simulate_calls(&app->model, app->preview);
         refresh(app);
         return;
     }
@@ -614,12 +641,15 @@ int main(int argc, char **argv)
                  (strcmp(argv[i] + 10, "incoming") == 0 ||
                   strcmp(argv[i] + 10, "active") == 0 ||
                   strcmp(argv[i] + 10, "compact") == 0 ||
-                  strcmp(argv[i] + 10, "outgoing") == 0)) {
+                  strcmp(argv[i] + 10, "outgoing") == 0 ||
+                  strcmp(argv[i] + 10, "waiting") == 0 ||
+                  strcmp(argv[i] + 10, "two-calls") == 0 ||
+                  strcmp(argv[i] + 10, "conference") == 0)) {
             app.preview = argv[i] + 10;
             mock = true;
         } else {
             g_printerr("Usage: iblueconnect [--background|--mock|--developer|--self-test|"
-                       "--preview=incoming|active|compact|outgoing]\n");
+                       "--preview=incoming|active|compact|outgoing|waiting|two-calls|conference]\n");
             return 2;
         }
     }

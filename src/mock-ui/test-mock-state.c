@@ -156,6 +156,71 @@ static void calls_unavailable_prevents_mock_outgoing_calls(void)
     assert(model.call == MOCK_CALL_IDLE);
 }
 
+static void mock_waiting_call_can_be_held_and_answered(void)
+{
+    MockUiModel model;
+    mock_ui_init(&model);
+    mock_ui_simulate_calls(&model, "waiting");
+    assert(model.call == MOCK_CALL_ACTIVE && model.popup_visible && model.waiting_visible);
+    assert(model.call_count == 2 && model.lines[1].phase == MOCK_LINE_WAITING);
+    assert(strcmp(model.waiting_call_id, model.lines[1].id) == 0);
+    char waiting[128];
+    strcpy(waiting, model.waiting_call_id);
+    mock_ui_ignore_waiting(&model);
+    assert(!model.waiting_visible && model.popup_visible);
+    assert(mock_ui_calls_action(&model, "hold-and-answer", waiting));
+    assert(model.lines[0].phase == MOCK_LINE_HELD && model.lines[1].phase == MOCK_LINE_ACTIVE);
+    assert(strcmp(model.call_id, waiting) == 0 && model.caller_index == 1);
+    assert(model.can_swap && model.can_merge && !model.waiting_call_id[0]);
+    assert(mock_ui_calls_action(&model, "swap", ""));
+    assert(model.lines[0].phase == MOCK_LINE_ACTIVE && model.caller_index == 0);
+}
+
+static void mock_waiting_call_can_replace_the_active_call(void)
+{
+    MockUiModel model;
+    mock_ui_init(&model);
+    mock_ui_simulate_calls(&model, "waiting");
+    char waiting[128];
+    strcpy(waiting, model.waiting_call_id);
+    assert(mock_ui_calls_action(&model, "release-and-answer", waiting));
+    assert(model.call_count == 1 && model.call == MOCK_CALL_ACTIVE && model.caller_index == 1);
+    assert(model.can_hold && model.can_add_call);
+    mock_ui_simulate_calls(&model, "waiting");
+    assert(mock_ui_calls_action(&model, "end-line", model.waiting_call_id)); /* Decline. */
+    assert(model.call_count == 1 && !model.waiting_visible && model.call == MOCK_CALL_ACTIVE);
+    mock_ui_simulate_calls(&model, "waiting");
+    assert(mock_ui_calls_action(&model, "end", ""));
+    assert(model.call == MOCK_CALL_INCOMING && model.caller_index == 1 && model.call_count == 0);
+}
+
+static void mock_conference_merges_splits_and_ends(void)
+{
+    MockUiModel model;
+    mock_ui_init(&model);
+    mock_ui_simulate_calls(&model, "two-calls");
+    assert(model.lines[0].phase == MOCK_LINE_ACTIVE && model.lines[1].phase == MOCK_LINE_HELD);
+    assert(mock_ui_calls_action(&model, "merge", ""));
+    assert(model.can_end_conference && model.can_private && model.can_add_call);
+    assert(mock_ui_calls_action(&model, "add", "555 0100 0000"));
+    assert(model.call_count == 3 && model.lines[2].phase == MOCK_LINE_ACTIVE && !model.lines[2].multiparty);
+    assert(model.lines[0].phase == MOCK_LINE_HELD && model.can_swap);
+    mock_ui_simulate_calls(&model, "conference");
+    assert(model.call_count == 3 && model.can_private);
+    char member[128];
+    strcpy(member, model.lines[1].id);
+    assert(mock_ui_calls_action(&model, "private", member));
+    assert(model.lines[1].phase == MOCK_LINE_ACTIVE && !model.lines[1].multiparty);
+    assert(model.lines[0].phase == MOCK_LINE_HELD && model.lines[0].multiparty);
+    assert(mock_ui_calls_action(&model, "swap", ""));
+    assert(model.can_end_conference);
+    assert(mock_ui_calls_action(&model, "end-conference", ""));
+    assert(model.call_count == 1 && model.lines[0].phase == MOCK_LINE_HELD && model.call_held);
+    assert(mock_ui_calls_action(&model, "end-line", model.lines[0].id));
+    assert(model.call == MOCK_CALL_ENDING);
+    assert(!mock_ui_calls_action(&model, "swap", ""));
+}
+
 int main(void)
 {
     incoming_can_be_ignored_without_declining();
@@ -171,5 +236,8 @@ int main(void)
     unknown_incoming_shows_a_mock_number();
     invalid_contact_index_cannot_escape_mock_data();
     calls_unavailable_prevents_mock_outgoing_calls();
+    mock_waiting_call_can_be_held_and_answered();
+    mock_waiting_call_can_replace_the_active_call();
+    mock_conference_merges_splits_and_ends();
     return 0;
 }

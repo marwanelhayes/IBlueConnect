@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -34,6 +35,10 @@ enum Operation {
     Resume(String),
     AddCall(String),
     Merge,
+    Swap,
+    PrivateChat(String),
+    HoldAndAnswer(String),
+    ReleaseAndAnswer(String),
     EndCall(String),
     EndConference,
     Tone(String, char),
@@ -170,6 +175,10 @@ impl Service {
     fn resume(&self, id: &str) -> zbus::fdo::Result<()> { self.command(Operation::Resume(id.into())) }
     fn add_call(&self, number: &str) -> zbus::fdo::Result<()> { self.command(Operation::AddCall(number.into())) }
     fn merge(&self) -> zbus::fdo::Result<()> { self.command(Operation::Merge) }
+    fn swap(&self) -> zbus::fdo::Result<()> { self.command(Operation::Swap) }
+    fn private_chat(&self, id: &str) -> zbus::fdo::Result<()> { self.command(Operation::PrivateChat(id.into())) }
+    fn hold_and_answer(&self, id: &str) -> zbus::fdo::Result<()> { self.command(Operation::HoldAndAnswer(id.into())) }
+    fn release_and_answer(&self, id: &str) -> zbus::fdo::Result<()> { self.command(Operation::ReleaseAndAnswer(id.into())) }
     fn end_call(&self, id: &str) -> zbus::fdo::Result<()> { self.command(Operation::EndCall(id.into())) }
     fn end_conference(&self) -> zbus::fdo::Result<()> { self.command(Operation::EndConference) }
     fn send_tone(&self, id: &str, tone: &str) -> zbus::fdo::Result<()> {
@@ -233,6 +242,7 @@ impl Worker {
         let mut effects = Vec::new();
         self.presenter.observe_with(self.backend.observation(), &caller,
             || (screen_locked(lock_session), dnd_active()), &mut |effect| effects.push(effect.clone()));
+        self.presenter.waiting(&self.calls, dnd_active, &mut |effect| effects.push(effect.clone()));
         for effect in effects { run_effect(&effect); }
     }
 
@@ -325,13 +335,21 @@ impl Worker {
         if self.multi_pending.is_some() || self.backend.has_pending_command() {
             return Reply::Done(Err("Another call action is pending".into()));
         }
-        if matches!(operation, Operation::Hold(_) | Operation::Resume(_) | Operation::AddCall(_) | Operation::Merge | Operation::EndCall(_) | Operation::EndConference) {
+        if let Err(message) = self.guard_operation(&operation) {
+            return Reply::Done(Err(message.into()));
+        }
+        if matches!(operation, Operation::Hold(_) | Operation::Resume(_) | Operation::AddCall(_) | Operation::Merge | Operation::EndCall(_) | Operation::EndConference
+                | Operation::Swap | Operation::PrivateChat(_) | Operation::HoldAndAnswer(_) | Operation::ReleaseAndAnswer(_)) {
             let ofono = self.ofono.as_ref().unwrap();
             let result = match operation {
                 Operation::Hold(id) => ofono.hold(&id),
                 Operation::Resume(id) => ofono.resume(&id),
                 Operation::AddCall(number) => ofono.add_call(&number).map(|_| ()),
                 Operation::Merge => ofono.merge(),
+                Operation::Swap => ofono.swap(),
+                Operation::PrivateChat(id) => ofono.private_chat(&id),
+                Operation::HoldAndAnswer(id) => ofono.hold_and_answer(&id),
+                Operation::ReleaseAndAnswer(id) => ofono.release_and_answer(&id),
                 Operation::EndCall(id) => ofono.end_call(&id),
                 Operation::EndConference => ofono.end_conference(),
                 _ => unreachable!(),
@@ -341,15 +359,13 @@ impl Worker {
             let _ = self.refresh();
             return Reply::Done(reply);
         }
-        if let Err(message) = self.guard_operation(&operation) {
-            return Reply::Done(Err(message.into()));
-        }
         let command = match operation {
             Operation::Action(action, id) => self.backend.plan_action(action, &id),
             Operation::Dial(number) => self.backend.plan_dial(&number),
             Operation::Tone(id, tone) => self.backend.plan_tone(&id, tone),
             Operation::Snapshot | Operation::SnapshotDetails | Operation::Calls | Operation::CallAudio | Operation::SetMuted(_) | Operation::Contacts | Operation::SyncContacts | Operation::Recents | Operation::BatteryStatus
-                | Operation::Hold(_) | Operation::Resume(_) | Operation::AddCall(_) | Operation::Merge | Operation::EndCall(_) | Operation::EndConference => unreachable!(),
+                | Operation::Hold(_) | Operation::Resume(_) | Operation::AddCall(_) | Operation::Merge | Operation::EndCall(_) | Operation::EndConference
+                | Operation::Swap | Operation::PrivateChat(_) | Operation::HoldAndAnswer(_) | Operation::ReleaseAndAnswer(_) => unreachable!(),
         };
         let command = match command {
             Ok(command) => command,
@@ -505,10 +521,23 @@ fn screen_locked(session: &Connection) -> Option<bool> {
 struct Presenter {
     policy: PresentationPolicy,
     ringing: Option<String>,
+    waiting: HashSet<String>,
 }
 
 impl Presenter {
-    fn new() -> Self { Self { policy: PresentationPolicy::new(true, true), ringing: None } }
+    fn new() -> Self { Self { policy: PresentationPolicy::new(true, true), ringing: None, waiting: HashSet::new() } }
+
+    /// Shows the controller with one soft beep per newly waiting call; DND keeps it silent.
+    fn waiting(&mut self, calls: &[OfonoCall], dnd: impl FnOnce() -> bool, run: &mut impl FnMut(&Effect)) {
+        let waiting: HashSet<String> = calls.iter().filter(|call| call.state == "waiting").map(|call| call.path.clone()).collect();
+        let fresh: Vec<String> = waiting.difference(&self.waiting).cloned().collect();
+        self.waiting = waiting;
+        if fresh.is_empty() || dnd() { return; }
+        for id in fresh {
+            run(&Effect::ShowWaiting(id.clone()));
+            run(&Effect::WaitingAlert(id));
+        }
+    }
 
     #[cfg(test)]
     fn observe(&mut self, observed: &Observation, caller: &str, locked: Option<bool>, dnd: bool, run: &mut impl FnMut(&Effect)) {
@@ -546,8 +575,9 @@ fn dnd_active() -> bool {
 /// The GUI shows its floating call controller; ringing ends are followed from Snapshot.
 fn effect_command(effect: &Effect, ui: &std::path::Path) -> Option<(std::path::PathBuf, &'static [&'static str])> {
     match effect {
-        Effect::ShowIncoming(..) => Some((ui.to_path_buf(), &["--background"])),
+        Effect::ShowIncoming(..) | Effect::ShowWaiting(_) => Some((ui.to_path_buf(), &["--background"])),
         Effect::Alert(..) => Some(("canberra-gtk-play".into(), &["-i", "phone-incoming-call"])),
+        Effect::WaitingAlert(_) => Some(("canberra-gtk-play".into(), &["-i", "message-new-instant"])),
         _ => None,
     }
 }
@@ -594,7 +624,7 @@ fn observe_location() -> AudioLocation {
 }
 
 fn answer_guard(operation: &Operation, read_locked: impl FnOnce() -> Option<bool>) -> Result<(), &'static str> {
-    if matches!(operation, Operation::Action(CallAction::Answer, _)) {
+    if matches!(operation, Operation::Action(CallAction::Answer, _) | Operation::HoldAndAnswer(_) | Operation::ReleaseAndAnswer(_)) {
         match read_locked() {
             Some(false) => Ok(()),
             Some(true) => Err("Unlock the screen before answering"),
@@ -851,6 +881,54 @@ mod tests {
         assert!(answer_guard(&answer, || None).is_err());
         let decline = Operation::Action(CallAction::Decline, "call-1".into());
         assert!(answer_guard(&decline, || panic!("lock query should be skipped")).is_ok());
+    }
+
+    #[test]
+    fn waiting_answers_require_confirmed_unlocked_screen() {
+        for operation in [Operation::HoldAndAnswer("call-2".into()), Operation::ReleaseAndAnswer("call-2".into())] {
+            assert!(answer_guard(&operation, || Some(false)).is_ok());
+            assert!(answer_guard(&operation, || Some(true)).is_err());
+            assert!(answer_guard(&operation, || None).is_err());
+        }
+        assert!(answer_guard(&Operation::Swap, || panic!("lock query should be skipped")).is_ok());
+        assert!(answer_guard(&Operation::PrivateChat("call-1".into()), || panic!("lock query should be skipped")).is_ok());
+    }
+
+    #[test]
+    fn waiting_call_shows_the_controller_with_a_soft_beep() {
+        let ui = std::path::Path::new("/opt/iblueconnect");
+        assert_eq!(effect_command(&Effect::ShowWaiting("c".into()), ui), Some((ui.to_path_buf(), &["--background"][..])));
+        assert_eq!(effect_command(&Effect::WaitingAlert("c".into()), ui),
+            Some(("canberra-gtk-play".into(), &["-i", "message-new-instant"][..])));
+    }
+
+    fn waiting_effects(presenter: &mut Presenter, states: &[&str], dnd: bool) -> Vec<Effect> {
+        let calls: Vec<_> = states.iter().enumerate().map(|(index, state)| OfonoCall {
+            path: format!("/c{}", index + 1), state: (*state).into(), multiparty: false, number: None, name: None,
+        }).collect();
+        let mut run = Vec::new();
+        presenter.waiting(&calls, || dnd, &mut |effect: &Effect| run.push(effect.clone()));
+        run
+    }
+
+    #[test]
+    fn a_waiting_call_alerts_once_per_id() {
+        let mut presenter = Presenter::new();
+        assert!(waiting_effects(&mut presenter, &["active"], false).is_empty());
+        assert_eq!(waiting_effects(&mut presenter, &["active", "waiting"], false),
+            [Effect::ShowWaiting("/c2".into()), Effect::WaitingAlert("/c2".into())]);
+        assert!(waiting_effects(&mut presenter, &["active", "waiting"], false).is_empty());
+        // Answering or ending it plays nothing; a later waiting call alerts again.
+        assert!(waiting_effects(&mut presenter, &["held", "active"], false).is_empty());
+        assert!(waiting_effects(&mut presenter, &["active"], false).is_empty());
+        assert_eq!(waiting_effects(&mut presenter, &["active", "waiting"], false).len(), 2);
+    }
+
+    #[test]
+    fn a_waiting_call_under_dnd_is_silent_and_not_replayed() {
+        let mut presenter = Presenter::new();
+        assert!(waiting_effects(&mut presenter, &["active", "waiting"], true).is_empty());
+        assert!(waiting_effects(&mut presenter, &["active", "waiting"], false).is_empty());
     }
 
     #[test]
