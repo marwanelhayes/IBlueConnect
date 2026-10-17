@@ -2,7 +2,7 @@
 
 Date: 2026-09-24. Workspace: `/home/marwan-ahmed/Work/IBlueConnect`. Supersedes the older /tmp handoffs.
 
-## 2026-10-17 full multi-call controls — built and tested offline, not installed
+## 2026-10-17 full multi-call controls — installed, live acceptance pending
 
 The user requested Add call, merging, switching between callers and the other missing phone-call features; approved call waiting, Swap with a two-call list, Add call in the floating controller, and conference management; and chose a waiting-call alert of controller plus one soft beep. The contract lives in the spec's 2026-10-17 entry.
 
@@ -11,6 +11,8 @@ Daemon (`src/ofono.rs`, `src/bin/iblueconnectd.rs`, `src/history_tracker.rs`, `s
 UI (`src/mock-ui/`): per-call rows in the model with eligibility in `mock_ui_derive_calls`; controller waiting banner (Ignore, red Decline, green Hold & Accept, End & Accept), call list with conference grouping and per-row End/Private, Swap and Add call buttons (Add call opens the main window on Keypad). The End button becomes End conference when eligible. Developer window and `--preview=waiting|two-calls|conference` simulate the states. UI eligibility was aligned to the daemon's guards (`conference_controls_match_the_daemon`).
 
 Verification: `cargo test --locked` 96 passed/2 ignored (pre-existing) + 29 daemon tests, release build OK, in local image `iblueconnect-rust:26.04` (rustup inside the image; wrapper ran with `--network none`, registry read-only). `packaging/test-mock-ui.sh` passes on `iblueconnect-build:26.04` and `:24.04` (28 GTK tests + mock-state/live) when run with `-e GTK_A11Y=none`; without it the accessibility-bus warning aborts `test-main-view` (pre-existing). Nothing installed, no service restarted, no call placed, no Git operation. Live iPhone/carrier behavior of every multi-call action, `PrivateChat`/`ReleaseAndAnswer` support in the phone's HFP `+CHLD`, and the beep's audibility during a call remain unverified.
+
+**Deployment (2026-10-17, user-approved).** Committed as `ac17962` on branch `multi-call-controls`, pushed to `origin`; `main` unchanged. Fresh UI and daemon builds installed atomically to `~/.local/bin`; previous binaries in `target/rollback/`. The idle gate read `calling unavailable` with 0 calls (phone disconnected); the user explicitly approved restarting while disconnected, and only `iblueconnectd.service` was restarted. It is active and introspection shows `Swap`, `PrivateChat`, `HoldAndAnswer`, `ReleaseAndAnswer`. Next: user connects the phone manually, reopens the app, and tests each action on a live call.
 
 ## 2026-10-07 connected Bluetooth, calling unavailable — recovered
 
