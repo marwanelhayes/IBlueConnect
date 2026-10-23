@@ -50,6 +50,19 @@ static void click(Fixture *f, const char *name)
     g_signal_emit_by_name(button, "clicked");
 }
 
+/* Mute is a tile: the microphone icon over a caption, like the mockup. */
+static const char *mute_icon(GtkWindow *window)
+{
+    GtkWidget *content = gtk_button_get_child(GTK_BUTTON(find(GTK_WIDGET(window), "mute")));
+    return gtk_image_get_icon_name(GTK_IMAGE(g_object_get_data(G_OBJECT(content), "tile-image")));
+}
+
+static const char *mute_label(GtkWindow *window)
+{
+    GtkWidget *content = gtk_button_get_child(GTK_BUTTON(find(GTK_WIDGET(window), "mute")));
+    return gtk_label_get_text(GTK_LABEL(g_object_get_data(G_OBJECT(content), "tile-caption")));
+}
+
 static void assert_identity_on_screen(GtkWindow *window)
 {
     while (g_main_context_pending(NULL)) g_main_context_iteration(NULL, FALSE);
@@ -142,9 +155,8 @@ static void incoming_flow(gconstpointer ignored)
     g_assert_cmpstr(f.last_action, ==, "open-app");
     g_assert_true(gtk_widget_get_visible(GTK_WIDGET(window)));
     click(&f, "answer");
-    GtkWidget *mute_content = gtk_button_get_child(GTK_BUTTON(find(GTK_WIDGET(window), "mute")));
-    g_assert_true(GTK_IS_IMAGE(mute_content));
-    g_assert_cmpstr(gtk_image_get_icon_name(GTK_IMAGE(mute_content)), ==, "audio-input-microphone-symbolic");
+    g_assert_cmpstr(mute_icon(window), ==, "audio-input-microphone-symbolic");
+    g_assert_cmpstr(mute_label(window), ==, "Mute");
     g_assert_cmpstr(gtk_widget_get_tooltip_text(find(GTK_WIDGET(window), "mute")), ==, "Mute");
     g_assert_cmpint(f.model.call, ==, MOCK_CALL_ACTIVE);
     g_assert_true(mock_call_popup_window(f.popup) == window);
@@ -156,22 +168,19 @@ static void incoming_flow(gconstpointer ignored)
     g_assert_false(gtk_widget_get_visible(find(GTK_WIDGET(window), "incoming-actions")));
     click(&f, "mute");
     g_assert_true(f.model.muted);
-    mute_content = gtk_button_get_child(GTK_BUTTON(find(GTK_WIDGET(window), "mute")));
-    g_assert_true(GTK_IS_IMAGE(mute_content));
-    g_assert_cmpstr(gtk_image_get_icon_name(GTK_IMAGE(mute_content)), ==, "microphone-sensitivity-muted-symbolic");
+    g_assert_cmpstr(mute_icon(window), ==, "microphone-sensitivity-muted-symbolic");
+    g_assert_cmpstr(mute_label(window), ==, "Muted");
     g_assert_cmpstr(gtk_widget_get_tooltip_text(find(GTK_WIDGET(window), "mute")), ==, "Unmute");
     click(&f, "compact");
     g_assert_true(f.model.compact);
     assert_identity_on_screen(window);
     g_assert_false(gtk_widget_get_visible(find(GTK_WIDGET(window), "keypad-toggle")));
     g_assert_true(gtk_widget_get_visible(find(GTK_WIDGET(window), "audio-selector")));
-    mute_content = gtk_button_get_child(GTK_BUTTON(find(GTK_WIDGET(window), "mute")));
-    g_assert_true(GTK_IS_IMAGE(mute_content));
-    g_assert_cmpstr(gtk_image_get_icon_name(GTK_IMAGE(mute_content)), ==, "microphone-sensitivity-muted-symbolic");
+    g_assert_cmpstr(mute_icon(window), ==, "microphone-sensitivity-muted-symbolic");
+    g_assert_cmpstr(mute_label(window), ==, ""); /* Compact keeps icons only. */
     click(&f, "mute");
     g_assert_false(f.model.muted);
-    mute_content = gtk_button_get_child(GTK_BUTTON(find(GTK_WIDGET(window), "mute")));
-    g_assert_cmpstr(gtk_image_get_icon_name(GTK_IMAGE(mute_content)), ==, "audio-input-microphone-symbolic");
+    g_assert_cmpstr(mute_icon(window), ==, "audio-input-microphone-symbolic");
     g_assert_cmpstr(gtk_widget_get_tooltip_text(find(GTK_WIDGET(window), "mute")), ==, "Mute");
     click(&f, "mute");
     click(&f, "expand");
@@ -707,6 +716,32 @@ static void assert_button_color(GtkWidget *button, gboolean green)
     g_object_unref(paintable);
 }
 
+/* The controller matches the strip: labelled tiles, a bold timer, and a wide solid-red End pill. */
+static void controller_matches_the_strip(gconstpointer ignored)
+{
+    (void)ignored;
+    Fixture f = {0};
+    mock_ui_init(&f.model);
+    f.popup = mock_call_popup_new(app, action, &f);
+    mock_ui_incoming(&f.model, 0);
+    mock_ui_answer(&f.model);
+    mock_call_popup_update(f.popup, &f.model);
+    GtkWindow *window = mock_call_popup_window(f.popup);
+    gtk_window_present(window);
+    for (int i = 0; i < 40; i++) while (g_main_context_pending(NULL)) g_main_context_iteration(NULL, FALSE);
+    g_assert_true(gtk_widget_has_css_class(GTK_WIDGET(window), "call-controller"));
+    GtkWidget *keypad = gtk_button_get_child(GTK_BUTTON(find(GTK_WIDGET(window), "keypad-toggle")));
+    g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(g_object_get_data(G_OBJECT(keypad), "tile-caption"))), ==, "Keypad");
+    int row = 0; /* Labelled tiles still fit the 360 px controller's 332 px content width (shadows excluded). */
+    gtk_widget_measure(find(GTK_WIDGET(window), "active-actions"), GTK_ORIENTATION_HORIZONTAL, -1, NULL, &row, NULL, NULL);
+    g_assert_cmpint(row, <=, 332);
+    g_assert_true(gtk_widget_has_css_class(find(GTK_WIDGET(window), "call-timer"), "heading"));
+    GtkWidget *end = find(GTK_WIDGET(window), "end");
+    g_assert_true(gtk_widget_get_hexpand(end));
+    assert_button_color(end, FALSE);
+    gtk_window_destroy(window);
+}
+
 /* No empty band under Ignore/Decline/Answer: the window hugs its content. */
 static void incoming_window_has_no_empty_space(gconstpointer ignored)
 {
@@ -777,6 +812,7 @@ int main(int argc, char **argv)
     g_test_add_data_func("/popup/outgoing-wave", NULL, outgoing_voice_is_accent_from_the_left);
     g_test_add_data_func("/popup/incoming-colors", NULL, incoming_colors);
     g_test_add_data_func("/popup/incoming-compact-height", NULL, incoming_window_has_no_empty_space);
+    g_test_add_data_func("/popup/controller-style", NULL, controller_matches_the_strip);
     g_test_add_data_func("/popup/waiting-banner", NULL, waiting_banner);
     g_test_add_data_func("/popup/call-list", NULL, call_list_and_multi_call_actions);
     int result = g_test_run();

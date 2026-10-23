@@ -10,7 +10,7 @@
 #endif
 
 struct MockCallPopup {
-    GtkWidget *window, *avatar, *avatar_ring, *audio_content, *end_content, *identity, *number, *subtitle, *timer;
+    GtkWidget *window, *avatar, *avatar_ring, *audio_content, *end_content, *mute_content, *keypad_content, *identity, *number, *subtitle, *timer;
     GtkWidget *waveform, *levels, *wave_labels, *wave_you, *wave_caller;
     GtkWidget *incoming, *outgoing, *active, *call_management, *hold_button, *resume_button, *merge_button, *terminal, *details;
     GtkWidget *compact_button, *expand_button, *mute_button, *keypad_button, *keypad, *tone_feedback, *open_app_button, *end_button;
@@ -57,6 +57,31 @@ static GtkWidget *labeled(GtkWidget *button, const char *icon, const char *text)
     if (GTK_IS_MENU_BUTTON(button)) gtk_menu_button_set_child(GTK_MENU_BUTTON(button), content);
     else gtk_button_set_child(GTK_BUTTON(button), content);
     return content;
+}
+
+/* Icon over a small caption, like the strip mockup's tiles; narrow enough for the 360 px controller. */
+static GtkWidget *tile(GtkWidget *button, const char *icon, const char *text)
+{
+    GtkWidget *content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    GtkWidget *image = gtk_image_new_from_icon_name(icon);
+    GtkWidget *caption = gtk_label_new(text);
+    gtk_widget_add_css_class(caption, "caption");
+    gtk_box_append(GTK_BOX(content), image);
+    gtk_box_append(GTK_BOX(content), caption);
+    g_object_set_data(G_OBJECT(content), "tile-image", image);
+    g_object_set_data(G_OBJECT(content), "tile-caption", caption);
+    if (GTK_IS_MENU_BUTTON(button)) gtk_menu_button_set_child(GTK_MENU_BUTTON(button), content);
+    else gtk_button_set_child(GTK_BUTTON(button), content);
+    return content;
+}
+
+/* icon may be NULL to keep it; an empty caption (compact mode) leaves the icon alone. */
+static void set_tile(GtkWidget *content, const char *icon, const char *text)
+{
+    if (icon) gtk_image_set_from_icon_name(GTK_IMAGE(g_object_get_data(G_OBJECT(content), "tile-image")), icon);
+    GtkWidget *caption = g_object_get_data(G_OBJECT(content), "tile-caption");
+    gtk_label_set_text(GTK_LABEL(caption), text);
+    gtk_widget_set_visible(caption, *text != '\0');
 }
 
 static void dispatch(MockCallPopup *popup, const char *name, const char *argument)
@@ -462,12 +487,22 @@ static void install_css(void)
         "label.wave-you { color: @accent_color; font-weight: bold; font-size: 0.8em; }"
         "label.wave-you.muted { color: alpha(@window_fg_color, 0.5); }"
         "label.wave-caller { color: #2ec27e; font-weight: bold; font-size: 0.8em; }"
-        "button.call-answer { background-color: #187833; background-image: none; color: #fff; }"
-        "button.call-answer:hover { background-color: #1b803a; }"
-        "button.call-answer:active { background-color: #14652b; }"
-        "button.call-decline { background-color: #c01c28; background-image: none; color: #fff; }"
-        "button.call-decline:hover { background-color: #d02030; }"
-        "button.call-decline:active { background-color: #a01824; }");
+        /* The rest of the controller follows the voice strip: soft tinted tiles and full pills. */
+        "window.call-controller button { border-radius: 12px; min-height: 40px; padding: 4px 10px; box-shadow: none;"
+        " background-image: none; background-color: alpha(@window_fg_color, 0.07); }"
+        "window.call-controller button:hover { background-color: alpha(@window_fg_color, 0.12); }"
+        "window.call-controller button:active { background-color: alpha(@window_fg_color, 0.18); }"
+        "window.call-controller button.call-answer, window.call-controller button.call-decline,"
+        " window.call-controller button.destructive-action { border-radius: 999px; padding: 0 18px; font-weight: bold; }"
+        "window.call-controller button.destructive-action { background-color: #c01c28; color: #fff; }"
+        "window.call-controller button.destructive-action:hover { background-color: #d02030; }"
+        "window.call-controller button.destructive-action:active { background-color: #a01824; }"
+        "window.call-controller button.call-answer { background-color: #187833; background-image: none; color: #fff; }"
+        "window.call-controller button.call-answer:hover { background-color: #1b803a; }"
+        "window.call-controller button.call-answer:active { background-color: #14652b; }"
+        "window.call-controller button.call-decline { background-color: #c01c28; background-image: none; color: #fff; }"
+        "window.call-controller button.call-decline:hover { background-color: #d02030; }"
+        "window.call-controller button.call-decline:active { background-color: #a01824; }");
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(css),
                                                GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
     g_object_unref(css);
@@ -483,6 +518,7 @@ MockCallPopup *mock_call_popup_new(GtkApplication *app, MockCallPopupAction acti
     GtkWidget *window = adw_application_window_new(app);
     popup->window = window;
     gtk_window_set_title(GTK_WINDOW(window), "IBlueConnect Call");
+    gtk_widget_add_css_class(window, "call-controller");
     gtk_window_set_default_size(GTK_WINDOW(window), 360, -1);
     /* Adwaita windows default to a 200 px minimum height; hug the content instead (no empty band). */
     gtk_widget_set_size_request(window, 360, 1);
@@ -523,7 +559,7 @@ MockCallPopup *mock_call_popup_new(GtkApplication *app, MockCallPopupAction acti
     gtk_widget_set_name(popup->subtitle, "call-subtitle");
     gtk_box_append(GTK_BOX(identity_box), popup->subtitle);
     gtk_box_append(GTK_BOX(top), identity_box);
-    popup->timer = label("", "dim-label");
+    popup->timer = label("", "heading");
     gtk_widget_set_name(popup->timer, "call-timer");
     gtk_box_append(GTK_BOX(top), popup->timer);
     popup->open_app_button = action_button(popup, "Open app", NULL, "open-app", "");
@@ -600,6 +636,7 @@ MockCallPopup *mock_call_popup_new(GtkApplication *app, MockCallPopupAction acti
 
     popup->incoming = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_set_name(popup->incoming, "incoming-actions");
+    gtk_box_set_homogeneous(GTK_BOX(popup->incoming), TRUE); /* Equal pills across the row. */
     gtk_box_append(GTK_BOX(popup->incoming), action_button(popup, "Ignore", NULL, "ignore", ""));
     GtkWidget *decline = action_button(popup, "Decline", NULL, "decline", "");
     gtk_widget_add_css_class(decline, "call-decline");
@@ -620,12 +657,14 @@ MockCallPopup *mock_call_popup_new(GtkApplication *app, MockCallPopupAction acti
     popup->active = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_set_name(popup->active, "active-actions");
     popup->mute_button = action_button(popup, "Mute", "audio-input-microphone-symbolic", "mute", "");
+    popup->mute_content = tile(popup->mute_button, "audio-input-microphone-symbolic", "Mute");
     gtk_box_append(GTK_BOX(popup->active), popup->mute_button);
     popup->audio_button = make_audio(popup);
-    popup->audio_content = labeled(popup->audio_button, "audio-speakers-symbolic", "Audio");
+    popup->audio_content = tile(popup->audio_button, "audio-speakers-symbolic", "Audio");
     gtk_box_append(GTK_BOX(popup->active), popup->audio_button);
     GtkWidget *keypad_button = button("Keypad", "input-dialpad-symbolic", "keypad-toggle");
     popup->keypad_button = keypad_button;
+    popup->keypad_content = tile(keypad_button, "input-dialpad-symbolic", "Keypad");
     g_signal_connect(keypad_button, "clicked", G_CALLBACK(toggle_keypad), popup);
     gtk_box_append(GTK_BOX(popup->active), keypad_button);
     popup->compact_button = action_button(popup, "Compact", "view-restore-symbolic", "compact", "1");
@@ -636,6 +675,7 @@ MockCallPopup *mock_call_popup_new(GtkApplication *app, MockCallPopupAction acti
     GtkWidget *end = action_button(popup, "End call", "call-stop-symbolic", "end", "");
     popup->end_button = end;
     gtk_widget_add_css_class(end, "destructive-action");
+    gtk_widget_set_hexpand(end, TRUE); /* A wide End pill, as in the strip mockup. */
     popup->end_content = labeled(end, "call-stop-symbolic", "End");
     gtk_box_append(GTK_BOX(popup->active), end);
     gtk_box_append(GTK_BOX(body), popup->active);
@@ -751,10 +791,10 @@ void mock_call_popup_update(MockCallPopup *popup, const MockUiModel *model)
     gtk_label_set_text(GTK_LABEL(popup->terminal), model->call == MOCK_CALL_DECLINED ? "Call Declined" :
                        model->call == MOCK_CALL_ENDING ? "Ending call…" : "Call Ended");
     gtk_widget_set_tooltip_text(popup->mute_button, model->muted ? "Unmute" : "Mute");
-    gtk_button_set_icon_name(GTK_BUTTON(popup->mute_button),
-                             model->muted ? "microphone-sensitivity-muted-symbolic" :
-                             "audio-input-microphone-symbolic");
-    adw_button_content_set_label(ADW_BUTTON_CONTENT(popup->audio_content), model->compact ? "" : "Audio");
+    set_tile(popup->mute_content, model->muted ? "microphone-sensitivity-muted-symbolic" :
+             "audio-input-microphone-symbolic", model->compact ? "" : model->muted ? "Muted" : "Mute");
+    set_tile(popup->keypad_content, NULL, model->compact ? "" : "Keypad");
+    set_tile(popup->audio_content, NULL, model->compact ? "" : "Audio");
     const char *end_label = active && model->can_end_conference ? "End conference" : "End call";
     g_object_set_data(G_OBJECT(popup->end_button), "mock-action",
                       (gpointer)(active && model->can_end_conference ? "end-conference" : "end"));
