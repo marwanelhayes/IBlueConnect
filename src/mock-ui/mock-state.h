@@ -4,6 +4,13 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+/* The user's light/dark choice; System follows GNOME. */
+typedef enum {
+    MOCK_APPEARANCE_SYSTEM,
+    MOCK_APPEARANCE_LIGHT,
+    MOCK_APPEARANCE_DARK
+} MockAppearance;
+
 typedef enum {
     MOCK_CONNECTION_DISCONNECTED,
     MOCK_CONNECTION_CONNECTING,
@@ -101,6 +108,7 @@ typedef struct {
     bool calls_unavailable;
     bool empty_contacts;
     bool empty_recents;
+    MockAppearance appearance;
     bool empty_favorites;
     bool empty_audio_devices;
 } MockUiModel;

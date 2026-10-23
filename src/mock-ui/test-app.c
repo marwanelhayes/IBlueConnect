@@ -359,8 +359,27 @@ static void safe_exit_failure_preserves_app(AppFixture *fixture, gconstpointer i
     app_test_settle();
 }
 
+/* The choice is saved and applied to every window of the single app instance, controller included. */
+static void appearance_is_saved_and_applied(AppFixture *fixture, gconstpointer ignored)
+{
+    (void)ignored;
+    MockApp *app = &fixture->app;
+    AdwStyleManager *style = adw_style_manager_get_default();
+    main_action(MOCK_MAIN_APPEARANCE, -1, "dark", app);
+    g_assert_cmpint(app->model.appearance, ==, MOCK_APPEARANCE_DARK);
+    g_assert_cmpint(adw_style_manager_get_color_scheme(style), ==, ADW_COLOR_SCHEME_FORCE_DARK);
+    g_assert_cmpint(appearance_load(), ==, MOCK_APPEARANCE_DARK);
+    main_action(MOCK_MAIN_APPEARANCE, -1, "light", app);
+    g_assert_cmpint(adw_style_manager_get_color_scheme(style), ==, ADW_COLOR_SCHEME_FORCE_LIGHT);
+    main_action(MOCK_MAIN_APPEARANCE, -1, "system", app);
+    g_assert_cmpint(adw_style_manager_get_color_scheme(style), ==, ADW_COLOR_SCHEME_DEFAULT);
+    g_assert_cmpint(appearance_load(), ==, MOCK_APPEARANCE_SYSTEM);
+}
+
 int main(int argc, char **argv)
 {
+    char *config_home = g_dir_make_tmp("iblueconnect-app-config-XXXXXX", NULL);
+    g_setenv("XDG_CONFIG_HOME", config_home, TRUE);
     g_test_init(&argc, &argv, NULL);
     char *display = g_strdup(g_getenv("DISPLAY"));
     GTestDBus *bus = g_test_dbus_new(G_TEST_DBUS_NONE);
@@ -386,6 +405,7 @@ int main(int argc, char **argv)
     g_test_add("/app/privacy-windows", AppFixture, NULL, app_test_setup, privacy_hides_windows_without_ignoring_call, app_test_teardown);
     g_test_add("/app/stale-snapshot", AppFixture, NULL, app_test_setup, stale_snapshot_does_not_replace_new_state, app_test_teardown);
     g_test_add("/app/safe-exit", AppFixture, NULL, app_test_setup, safe_exit_failure_preserves_app, app_test_teardown);
+    g_test_add("/app/appearance", AppFixture, NULL, app_test_setup, appearance_is_saved_and_applied, app_test_teardown);
     int result = g_test_run();
     g_unlink(program);
     g_unlink(tap_log);

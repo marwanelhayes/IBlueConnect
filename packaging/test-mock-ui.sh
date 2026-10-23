@@ -32,10 +32,14 @@ cc -std=c11 -Wall -Wextra -Werror \
     "$root/src/mock-ui/test-privacy.c" "$root/src/mock-ui/privacy.c" \
     -o "$root/target/test-privacy" $(pkg-config --cflags --libs gio-2.0)
 timeout 20 "$root/target/test-privacy"
+cc -std=c11 -Wall -Wextra -Werror \
+    "$root/src/mock-ui/test-appearance.c" "$root/src/mock-ui/appearance.c" \
+    -o "$root/target/test-appearance" $(pkg-config --cflags --libs libadwaita-1)
+"$root/target/test-appearance"
 cc -std=c11 -Wall -Wextra -Werror -Wno-error=deprecated-declarations \
     "$root/src/mock-ui/test-app.c" "$root/src/mock-ui/mock-state.c" \
     "$root/src/mock-ui/main-view.c" "$root/src/mock-ui/call-popup.c" \
-    "$root/src/mock-ui/live.c" "$root/src/mock-ui/privacy.c" \
+    "$root/src/mock-ui/live.c" "$root/src/mock-ui/privacy.c" "$root/src/mock-ui/appearance.c" \
     -o "$root/target/test-app" $(pkg-config --cflags --libs gtk4 gtk4-x11 libadwaita-1 x11) -lm
 GDK_BACKEND=x11 GSK_RENDERER=cairo GSETTINGS_BACKEND=memory \
 GTK_USE_PORTAL=0 GIO_USE_VFS=local NO_AT_BRIDGE=1 \

@@ -472,6 +472,37 @@ static void device_popover(void)
     g_object_unref(app);
 }
 
+/* System / Light / Dark lives in the phone menu and reports the choice; the app applies it. */
+static void appearance_choice(void)
+{
+    MockUiModel model;
+    mock_ui_init(&model);
+    g_assert_cmpint(model.appearance, ==, MOCK_APPEARANCE_SYSTEM);
+    Event event = {0};
+    GtkApplication *app = gtk_application_new("org.iblueconnect.MockAppearanceTest", 0);
+    g_application_register(G_APPLICATION(app), NULL, NULL);
+    GtkWidget *window = mock_main_window_new(app, &model, on_action, &event);
+    GtkWidget *system = find_named(window, "appearance-system");
+    GtkWidget *light = find_named(window, "appearance-light");
+    GtkWidget *dark = find_named(window, "appearance-dark");
+    g_assert_nonnull(system);
+    g_assert_nonnull(light);
+    g_assert_nonnull(dark);
+    g_assert_true(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(system)));
+    model.appearance = MOCK_APPEARANCE_LIGHT;
+    mock_main_window_update(window);
+    g_assert_true(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(light)));
+    g_assert_false(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(system)));
+    g_assert_cmpint(event.count, ==, 0); /* Reflecting the model does not echo a choice back. */
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dark), TRUE);
+    g_assert_cmpint(event.count, ==, 1);
+    g_assert_cmpint(event.action, ==, MOCK_MAIN_APPEARANCE);
+    g_assert_cmpstr(event.value, ==, "dark");
+    gtk_window_destroy(GTK_WINDOW(window));
+    g_free(event.value);
+    g_object_unref(app);
+}
+
 static void preferences(void)
 {
     MockUiModel model;
@@ -834,6 +865,7 @@ int main(int argc, char **argv)
     g_test_add_func("/main/search-number", home_search_calls_typed_number);
     g_test_add_func("/main/contact-details", contact_details);
     g_test_add_func("/main/device-popover", device_popover);
+    g_test_add_func("/main/appearance", appearance_choice);
     g_test_add_func("/main/preferences", preferences);
     g_test_add_func("/main/keyboard-shortcuts", keyboard_shortcuts);
     g_test_add_func("/main/proportions", comfortable_proportions);

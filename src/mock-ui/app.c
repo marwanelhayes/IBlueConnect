@@ -7,6 +7,7 @@
 #include "main-view.h"
 #include "mock-state.h"
 #include "privacy.h"
+#include "appearance.h"
 
 typedef struct {
     GtkApplication *application;
@@ -602,6 +603,16 @@ static void main_action(MockMainAction action, int contact_index,
 {
     MockApp *app = data;
     if (app->privacy_locked) return;
+    if (action == MOCK_MAIN_APPEARANCE) {
+        app->model.appearance = appearance_parse(value);
+        appearance_apply(app->model.appearance);
+        GError *error = NULL;
+        if (!appearance_save(app->model.appearance, &error)) { /* Still applied for this session. */
+            g_warning("Appearance not saved: %s", error->message);
+            g_error_free(error);
+        }
+        return;
+    }
     if (action == MOCK_MAIN_QUIT || action == MOCK_MAIN_DISCONNECT) {
         request_safe_exit(app, action);
         return;
@@ -665,6 +676,7 @@ static void main_action(MockMainAction action, int contact_index,
     case MOCK_MAIN_FORGET:
     case MOCK_MAIN_RESUME:
     case MOCK_MAIN_SIRI:
+    case MOCK_MAIN_APPEARANCE:
         break;
     case MOCK_MAIN_SYNC:
         app->model.contact_sync_error = false;
@@ -958,6 +970,8 @@ int main(int argc, char **argv)
         app.model.connection = MOCK_CONNECTION_CONNECTING;
     }
     adw_init();
+    app.model.appearance = appearance_load(); /* Same choice for the main window and the call controller. */
+    appearance_apply(app.model.appearance);
     app.application = gtk_application_new(app.model.live ? "org.iblueconnect.IBlueConnect"
                                                          : "org.iblueconnect.Mock",
                                           G_APPLICATION_DEFAULT_FLAGS);

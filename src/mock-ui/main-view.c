@@ -12,6 +12,8 @@ typedef struct {
     GtkWidget *split, *sync_error, *calls_error, *connection_card, *link_status;
     int selected_contact;
     size_t recents_limit;
+    GtkWidget *appearance[3]; /* System, Light, Dark toggles. */
+    gboolean syncing_appearance;
     char lists_key[1024]; /* ponytail: queries past ~1000 chars may skip a rebuild; fine for a search box. */
 } MainView;
 
@@ -748,6 +750,43 @@ static const char *device_name(const MainView *self)
     return self->model->live ? "iPhone" : "Marwan's iPhone";
 }
 
+static void appearance_toggled(GtkToggleButton *button, gpointer user_data)
+{
+    MainView *self = user_data;
+    if (self->syncing_appearance || !gtk_toggle_button_get_active(button)) return;
+    emit(self, MOCK_MAIN_APPEARANCE, -1, g_object_get_data(G_OBJECT(button), "appearance"));
+}
+
+/* System / Light / Dark as one linked row of toggles (AdwToggleGroup needs libadwaita 1.7; 24.04 has 1.5). */
+static GtkWidget *appearance_row(MainView *self)
+{
+    static const char *const labels[] = { "System", "Light", "Dark" };
+    static const char *const values[] = { "system", "light", "dark" };
+    GtkWidget *row = hbox(0);
+    gtk_widget_add_css_class(row, "linked");
+    gtk_widget_set_halign(row, GTK_ALIGN_FILL);
+    gtk_box_set_homogeneous(GTK_BOX(row), TRUE);
+    for (int i = 0; i < 3; i++) {
+        GtkWidget *toggle = gtk_toggle_button_new_with_label(labels[i]);
+        char *name = g_strdup_printf("appearance-%s", values[i]);
+        gtk_widget_set_name(toggle, name);
+        g_free(name);
+        g_object_set_data(G_OBJECT(toggle), "appearance", (gpointer)values[i]);
+        if (i) gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(toggle), GTK_TOGGLE_BUTTON(self->appearance[0]));
+        g_signal_connect(toggle, "toggled", G_CALLBACK(appearance_toggled), self);
+        self->appearance[i] = toggle;
+        gtk_box_append(GTK_BOX(row), toggle);
+    }
+    return row;
+}
+
+static void sync_appearance(MainView *self)
+{
+    self->syncing_appearance = TRUE;
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(self->appearance[self->model->appearance]), TRUE);
+    self->syncing_appearance = FALSE;
+}
+
 static GtkWidget *build_device_menu(MainView *self)
 {
     GtkWidget *popover = gtk_popover_new();
@@ -768,6 +807,9 @@ static GtkWidget *build_device_menu(MainView *self)
     gtk_label_set_wrap(GTK_LABEL(self->device_sync), TRUE);
     gtk_label_set_max_width_chars(GTK_LABEL(self->device_sync), 32);
     gtk_box_append(GTK_BOX(box), self->device_sync);
+    gtk_box_append(GTK_BOX(box), text_label("Appearance", "heading"));
+    gtk_box_append(GTK_BOX(box), appearance_row(self));
+    sync_appearance(self);
     gtk_box_append(GTK_BOX(box), action_button("Sync Contacts", MOCK_MAIN_SYNC, self));
     GtkWidget *disconnect = action_button("Disconnect", MOCK_MAIN_DISCONNECT, self);
     gtk_widget_set_name(disconnect, "safe-disconnect");
@@ -987,6 +1029,7 @@ void mock_main_window_update(GtkWidget *window)
     gtk_label_set_text(GTK_LABEL(caption), ready ? "iPhone connected · Calls ready" :
                        "iPhone connected · Calls unavailable");
     render_lists(self);
+    sync_appearance(self);
     gtk_button_set_label(GTK_BUTTON(self->dial_button), self->model->can_add_call ? "Add call" : "Call");
     gtk_widget_set_sensitive(self->siri_button, can_ask_siri(self));
     dial_changed(GTK_EDITABLE(self->dial_entry), self);
