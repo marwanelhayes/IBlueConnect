@@ -36,6 +36,8 @@ size_t mock_recents_count = sizeof builtin_recents / sizeof builtin_recents[0];
 const size_t *mock_favorites = builtin_favorites;
 size_t mock_favorites_count = sizeof builtin_favorites / sizeof builtin_favorites[0];
 
+unsigned mock_data_version;
+
 void mock_ui_set_data(const MockContact *contacts, size_t contacts_count,
                       const MockRecent *recents, size_t recents_count,
                       const size_t *favorites, size_t favorites_count)
@@ -46,6 +48,7 @@ void mock_ui_set_data(const MockContact *contacts, size_t contacts_count,
     mock_recents_count = recents_count;
     mock_favorites = favorites;
     mock_favorites_count = favorites_count;
+    mock_data_version++;
 }
 
 int mock_ui_contact_named(const char *name)

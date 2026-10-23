@@ -11,6 +11,8 @@ typedef struct {
     GtkWidget *home_search, *dial_entry, *dial_match, *dial_button, *siri_button;
     GtkWidget *split, *sync_error, *calls_error, *connection_card, *link_status;
     int selected_contact;
+    size_t recents_limit;
+    char lists_key[1024]; /* ponytail: queries past ~1000 chars may skip a rebuild; fine for a search box. */
 } MainView;
 
 static GtkWidget *text_label(const char *text, const char *css)
@@ -320,14 +322,14 @@ static gboolean looks_like_number(const char *text)
     return digit;
 }
 
-/* A thin line across the middle 80% of the list, like the iPhone's Recents. */
+/* A thin line across the middle 90% of the list width (follows window size), like the iPhone's Recents. */
 static void draw_separator(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer data)
 {
     (void)data;
     GdkRGBA color;
     gtk_widget_get_color(GTK_WIDGET(area), &color);
     gdk_cairo_set_source_rgba(cr, &color);
-    cairo_rectangle(cr, width * 0.1, (height - 1) / 2, width * 0.8, 1);
+    cairo_rectangle(cr, width * 0.05, (height - 1) / 2, width * 0.9, 1);
     cairo_fill(cr);
 }
 
@@ -368,6 +370,8 @@ static GtkWidget *recent_row(MainView *self, const MockRecent *recent)
     g_signal_connect(button, "clicked", G_CALLBACK(call_contact), self);
     return button;
 }
+
+static void show_more_recents(MainView *self);
 
 static void render_recents(MainView *self)
 {
@@ -420,10 +424,17 @@ static void render_recents(MainView *self)
             found++;
         }
     } else {
-        for (size_t i = 0; i < mock_recents_count && !self->model->empty_recents; i++) {
+        for (size_t i = 0; i < mock_recents_count && i < self->recents_limit && !self->model->empty_recents; i++) {
             if (i) gtk_box_append(GTK_BOX(self->recents_box), recent_separator());
             gtk_box_append(GTK_BOX(self->recents_box), recent_row(self, &mock_recents[i]));
             found++;
+        }
+        if (!self->model->empty_recents && mock_recents_count > self->recents_limit) {
+            GtkWidget *more = gtk_button_new_with_label("Show more");
+            gtk_widget_add_css_class(more, "flat");
+            gtk_widget_set_halign(more, GTK_ALIGN_CENTER);
+            g_signal_connect_swapped(more, "clicked", G_CALLBACK(show_more_recents), self);
+            gtk_box_append(GTK_BOX(self->recents_box), more);
         }
     }
     if (!found) gtk_box_append(GTK_BOX(self->recents_box),
@@ -558,7 +569,7 @@ static GtkWidget *build_contacts(MainView *self)
     adw_breakpoint_add_setter(narrow, G_OBJECT(self->split), "collapsed", &collapsed);
     g_value_unset(&collapsed);
     adw_breakpoint_bin_add_breakpoint(ADW_BREAKPOINT_BIN(breakpoints), narrow);
-    g_signal_connect(self->contact_search, "changed", G_CALLBACK(search_changed), self);
+    g_signal_connect(self->contact_search, "search-changed", G_CALLBACK(search_changed), self);
     render_contacts(self);
     render_detail(self);
     return breakpoints;
@@ -578,7 +589,7 @@ static GtkWidget *build_recents(MainView *self)
     self->recents_box = vbox(4);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), self->recents_box);
     gtk_box_append(GTK_BOX(page), scroll);
-    g_signal_connect(self->home_search, "changed", G_CALLBACK(search_changed), self);
+    g_signal_connect(self->home_search, "search-changed", G_CALLBACK(search_changed), self);
     render_recents(self);
     return page;
 }
@@ -593,13 +604,13 @@ static void on_sync_banner(MainView *self)
     emit(self, MOCK_MAIN_SYNC, -1, NULL);
 }
 
-/* Siri has its own clear accent button on the connection card, shown on every tab. */
+/* Siri has its own prominent accent button in its own row under the connection card, on every tab. */
 static GtkWidget *siri_button_new(MainView *self)
 {
     self->siri_button = gtk_button_new();
     GtkWidget *siri_content = adw_button_content_new();
     adw_button_content_set_icon_name(ADW_BUTTON_CONTENT(siri_content), "audio-input-microphone-symbolic");
-    adw_button_content_set_label(ADW_BUTTON_CONTENT(siri_content), "Siri");
+    adw_button_content_set_label(ADW_BUTTON_CONTENT(siri_content), "Ask Siri");
     gtk_button_set_child(GTK_BUTTON(self->siri_button), siri_content);
     gtk_widget_set_name(self->siri_button, "siri-button");
     gtk_widget_add_css_class(self->siri_button, "suggested-action");
@@ -608,10 +619,11 @@ static GtkWidget *siri_button_new(MainView *self)
     gtk_accessible_update_property(GTK_ACCESSIBLE(self->siri_button), GTK_ACCESSIBLE_PROPERTY_LABEL, "Siri", -1);
     g_object_set_data(G_OBJECT(self->siri_button), "mock-action", GINT_TO_POINTER(MOCK_MAIN_SIRI));
     g_signal_connect(self->siri_button, "clicked", G_CALLBACK(action_clicked), self);
-    gtk_widget_set_halign(self->siri_button, GTK_ALIGN_END);
-    gtk_widget_set_valign(self->siri_button, GTK_ALIGN_START);
-    gtk_widget_set_margin_top(self->siri_button, 10);
-    gtk_widget_set_margin_end(self->siri_button, 10);
+    gtk_widget_add_css_class(self->siri_button, "pill");
+    gtk_widget_add_css_class(self->siri_button, "siri-button");
+    gtk_widget_set_halign(self->siri_button, GTK_ALIGN_CENTER);
+    gtk_widget_set_margin_top(self->siri_button, 6);
+    gtk_widget_set_margin_bottom(self->siri_button, 2);
     return self->siri_button;
 }
 
@@ -652,11 +664,9 @@ static GtkWidget *build_connected(MainView *self)
     gtk_label_set_xalign(GTK_LABEL(caption), 0.5);
     g_object_set_data(G_OBJECT(self->connection_card), "caption", caption);
     gtk_box_append(GTK_BOX(self->connection_card), caption);
-    GtkWidget *card_overlay = gtk_overlay_new();
-    gtk_overlay_set_child(GTK_OVERLAY(card_overlay), self->connection_card);
-    gtk_overlay_add_overlay(GTK_OVERLAY(card_overlay), siri_button_new(self));
-    adw_clamp_set_child(ADW_CLAMP(clamp), card_overlay);
+    adw_clamp_set_child(ADW_CLAMP(clamp), self->connection_card);
     gtk_box_append(GTK_BOX(body), clamp);
+    gtk_box_append(GTK_BOX(body), siri_button_new(self));
     self->pages = adw_view_stack_new();
     gtk_widget_set_vexpand(self->pages, TRUE);
     adw_view_stack_add_titled_with_icon(ADW_VIEW_STACK(self->pages), build_recents(self), "recents", "Recents", "document-open-recent-symbolic");
@@ -828,7 +838,8 @@ GtkWidget *mock_main_window_new(GtkApplication *app, MockUiModel *model,
             ".comfy-search { min-height: 44px; font-size: 1.1em; }"
             ".connection-card { padding: 20px; }"
             ".recent-separator { color: @window_fg_color; }"
-            ".recent-row { padding: 0; font-weight: normal; }");
+            ".recent-row { padding: 0; font-weight: normal; }"
+            ".siri-button { min-width: 200px; font-size: 1.1em; }");
         gtk_style_context_add_provider_for_display(gdk_display_get_default(),
             GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
     }
@@ -837,6 +848,7 @@ GtkWidget *mock_main_window_new(GtkApplication *app, MockUiModel *model,
     self->callback = callback;
     self->user_data = user_data;
     self->selected_contact = -1;
+    self->recents_limit = 50;
     self->window = adw_application_window_new(app);
     g_object_set_data_full(G_OBJECT(self->window), "mock-main-view", self, g_free);
     gtk_window_set_title(GTK_WINDOW(self->window), "IBlueConnect");
@@ -917,6 +929,27 @@ GtkWidget *mock_main_window_new(GtkApplication *app, MockUiModel *model,
     return self->window;
 }
 
+/* Rebuilding ~1000 rows is slow, so lists are rebuilt only when what they show changes. */
+static void render_lists(MainView *self)
+{
+    char key[sizeof self->lists_key];
+    g_snprintf(key, sizeof key, "%u|%d|%d|%d|%d|%d|%zu|%s", mock_data_version, can_call(self),
+               self->model->empty_recents, self->model->empty_contacts, self->model->empty_favorites,
+               self->selected_contact, self->recents_limit,
+               gtk_editable_get_text(GTK_EDITABLE(self->home_search)));
+    if (strcmp(key, self->lists_key) == 0) return;
+    g_strlcpy(self->lists_key, key, sizeof self->lists_key);
+    render_recents(self);
+    render_contacts(self);
+    render_detail(self);
+}
+
+static void show_more_recents(MainView *self)
+{
+    self->recents_limit += 50;
+    render_lists(self);
+}
+
 void mock_main_window_update(GtkWidget *window)
 {
     MainView *self = g_object_get_data(G_OBJECT(window), "mock-main-view");
@@ -953,9 +986,7 @@ void mock_main_window_update(GtkWidget *window)
     GtkWidget *caption = g_object_get_data(G_OBJECT(self->connection_card), "caption");
     gtk_label_set_text(GTK_LABEL(caption), ready ? "iPhone connected · Calls ready" :
                        "iPhone connected · Calls unavailable");
-    render_recents(self);
-    render_contacts(self);
-    render_detail(self);
+    render_lists(self);
     gtk_button_set_label(GTK_BUTTON(self->dial_button), self->model->can_add_call ? "Add call" : "Call");
     gtk_widget_set_sensitive(self->siri_button, can_ask_siri(self));
     dial_changed(GTK_EDITABLE(self->dial_entry), self);

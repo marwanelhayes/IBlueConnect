@@ -2,6 +2,23 @@
 
 Date: 2026-09-24. Workspace: `/home/marwan-ahmed/Work/IBlueConnect`. Supersedes the older /tmp handoffs.
 
+## 2026-10-23 (night) faster lists, Recents paging, prominent Siri, compact incoming popup — UI installed
+
+User choices: performance options 1, 2 and 5 (Recents limited to 50 with Show more); keep option 3 documented for later; make Siri more apparent on its own; separators 90% wide; remove the empty band under the incoming buttons.
+
+- **Rebuild only on change (option 1).** `mock_ui_set_data` (the single path for list data) bumps `mock_data_version`. `render_lists` in `main-view.c` rebuilds Recents/Contacts/detail only when a key of data version, `can_call`, empty flags, selected contact, Recents limit and home-search text changes; call-state refreshes no longer rebuild ~1100 rows.
+- **Debounced search (option 2).** Both search entries use GtkSearchEntry's `search-changed` (built-in ~150 ms delay) instead of `changed`.
+- **Recents paging (option 5).** First 50 calls, then a flat "Show more" button adds 50 at a time.
+- **Option 3 — deferred, user wants to return to it:** replace the hand-built boxes with virtualized `GtkListView` + `GListStore` (`GtkSignalListItemFactory` binding avatar/name/subtitle) for Contacts and Recents, so only visible rows exist. Biggest speed and memory win; larger refactor touching `render_recents`/`render_contacts`, search filtering (`GtkFilterListModel` + `GtkCustomFilter`), Missed styling, separators (list `show-separators` or a header factory) and every test that walks row widgets.
+- **Separators 90%.** Drawn from 5% to 95% of the separator's *allocated width*, so they follow the window/screen size on any device; nothing is hard-coded to pixels.
+- **Siri.** Its own row under the connection card: large accent pill "Ask Siri" with microphone icon, min width 200 px, on every tab. The full keypad still fits the default 480×700 window (`/main/default-keypad`).
+- **Incoming popup empty band.** Cause: libadwaita application windows default to a 200 px minimum height while incoming content needs ~110 px, leaving ~66 px blank under Ignore/Decline/Answer. `gtk_widget_set_size_request(window, 360, 1)` lets it hug content (popup now 138 px tall in the mock render). Test `/popup/incoming-compact-height` (failed with 66 px first).
+- Tests: `/main/recent-paging` (50 → 100 → 120 rows, Show more disappears, unchanged data keeps the same row objects via a marker, changed data rebuilds), 90% pixel checks in `/main/recent-rows`, Siri-row checks in `/main/siri`, search tests wait for the debounce. A pointer-equality check was replaced with a marker after 24.04's allocator reused the freed row's address. 44 UI tests pass on 26.04 and 24.04; renders inspected. UI-only install, self-test OK, no daemon restart.
+
+**FaceTime label on incoming calls (user report: FaceTime calls ring through the app as normal calls).** This confirms route 1 (FaceTime Audio arrives over HFP). oFono's `VoiceCall` exposes only `LineIdentification`, `Name`, `State`, `Multiparty` and similar, with no call-type field, so a label is possible only if FaceTime calls carry a distinguishable identifier (e.g., an Apple ID email). Next step needing user approval and a user-arranged FaceTime call: a private watcher recording, for one FaceTime and one normal call, only the identifier form (digits/email/empty), whether `Name` is set, and which property keys appear — never values. Implement `@`-identifier labeling only if that probe shows a difference.
+
+**Waveform question (research only, no code).** On iPhone 14 Pro and later, the Dynamic Island call waveform is orange/yellow while you speak and green while the caller speaks ([iPhone Mania](https://iphone-mania.jp/news-488228/), [Make Tech Easier](https://maketecheasier.com/dynamic-island-iphone/)); no Apple spec of exact colors or of direction was found. IBlueConnect already meters both directions separately (outgoing source and incoming stream), so a combined Apple-like waveform is feasible: outgoing voice in the Ubuntu accent flowing from one side, incoming voice in a second color (e.g., green) flowing from the other, with amplitude-driven motion. Awaiting user decision.
+
 ## 2026-10-23 (evening) iPhone-style Recents, standalone Siri button — UI installed
 
 User requests: a clear Siri button of its own; no Call button in Recents — tapping the person calls back; centred separator lines spanning 80% of the width between rows (iPhone Recents style).

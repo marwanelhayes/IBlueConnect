@@ -463,6 +463,8 @@ MockCallPopup *mock_call_popup_new(GtkApplication *app, MockCallPopupAction acti
     popup->window = window;
     gtk_window_set_title(GTK_WINDOW(window), "IBlueConnect Call");
     gtk_window_set_default_size(GTK_WINDOW(window), 360, -1);
+    /* Adwaita windows default to a 200 px minimum height; hug the content instead (no empty band). */
+    gtk_widget_set_size_request(window, 360, 1);
     gtk_window_set_resizable(GTK_WINDOW(window), FALSE);
     g_signal_connect(window, "close-request", G_CALLBACK(on_close), popup);
     g_signal_connect(window, "destroy", G_CALLBACK(on_destroy), popup);

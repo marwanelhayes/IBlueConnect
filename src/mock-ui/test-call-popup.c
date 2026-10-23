@@ -680,6 +680,24 @@ static void assert_button_color(GtkWidget *button, gboolean green)
     g_object_unref(paintable);
 }
 
+/* No empty band under Ignore/Decline/Answer: the window hugs its content. */
+static void incoming_window_has_no_empty_space(gconstpointer ignored)
+{
+    (void)ignored;
+    Fixture f = {0};
+    mock_ui_init(&f.model);
+    f.popup = mock_call_popup_new(app, action, &f);
+    mock_ui_incoming(&f.model, 0);
+    mock_call_popup_update(f.popup, &f.model);
+    GtkWindow *window = mock_call_popup_window(f.popup);
+    gtk_window_present(window);
+    for (int i = 0; i < 40; i++) while (g_main_context_pending(NULL)) g_main_context_iteration(NULL, FALSE);
+    graphene_rect_t actions;
+    g_assert_true(gtk_widget_compute_bounds(find(GTK_WIDGET(window), "incoming-actions"), GTK_WIDGET(window), &actions));
+    g_assert_cmpfloat(gtk_widget_get_height(GTK_WIDGET(window)) - (actions.origin.y + actions.size.height), <=, 24);
+    gtk_window_destroy(window);
+}
+
 static void incoming_colors(gconstpointer ignored)
 {
     (void)ignored;
@@ -731,6 +749,7 @@ int main(int argc, char **argv)
     g_test_add_data_func("/popup/voice", NULL, incoming_voice_fills_bar_and_speaking_glow);
     g_test_add_data_func("/popup/outgoing-wave", NULL, outgoing_wave_is_accented_and_flat_when_muted);
     g_test_add_data_func("/popup/incoming-colors", NULL, incoming_colors);
+    g_test_add_data_func("/popup/incoming-compact-height", NULL, incoming_window_has_no_empty_space);
     g_test_add_data_func("/popup/waiting-banner", NULL, waiting_banner);
     g_test_add_data_func("/popup/call-list", NULL, call_list_and_multi_call_actions);
     int result = g_test_run();

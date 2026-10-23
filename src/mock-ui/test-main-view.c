@@ -24,6 +24,16 @@ static GtkWidget *find_button(GtkWidget *root, const char *text)
     return NULL;
 }
 
+/* Search entries filter after a short typing pause (GtkSearchEntry's search delay). */
+static void wait_search(void)
+{
+    gint64 deadline = g_get_monotonic_time() + 400000;
+    while (g_get_monotonic_time() < deadline) {
+        while (g_main_context_iteration(NULL, FALSE)) {}
+        g_usleep(2000);
+    }
+}
+
 static GtkWidget *find_named(GtkWidget *root, const char *name)
 {
     if (g_strcmp0(gtk_widget_get_name(root), name) == 0) return root;
@@ -201,8 +211,10 @@ static void search_dial_and_empty_states(void)
     GtkWidget *search = find_search(window, "Search contacts");
     g_assert_nonnull(search);
     gtk_editable_set_text(GTK_EDITABLE(search), "zzzz");
+    wait_search();
     g_assert_nonnull(find_label(window, "No Search Results"));
     gtk_editable_set_text(GTK_EDITABLE(search), "0101234");
+    wait_search();
     g_assert_null(find_label(window, "No Search Results"));
     model.empty_contacts = true;
     model.empty_recents = true;
@@ -283,9 +295,9 @@ static void siri_button_starts_siri_only_when_idle(void)
     g_assert_null(find_named(pages, "siri-button")); /* Its own button, not part of the keypad. */
     GtkWidget *siri = find_named(window, "siri-button");
     g_assert_nonnull(siri);
-    GtkWidget *overlay = gtk_widget_get_ancestor(siri, GTK_TYPE_OVERLAY);
-    g_assert_nonnull(overlay);
-    g_assert_true(gtk_widget_has_css_class(gtk_overlay_get_child(GTK_OVERLAY(overlay)), "connection-card"));
+    g_assert_null(gtk_widget_get_ancestor(siri, GTK_TYPE_OVERLAY)); /* Its own row, not tucked into the card. */
+    g_assert_true(gtk_widget_has_css_class(siri, "pill"));
+    g_assert_nonnull(find_label(siri, "Ask Siri"));
     g_assert_true(gtk_widget_has_css_class(siri, "suggested-action"));
     g_assert_true(gtk_widget_is_sensitive(siri));
     g_signal_emit_by_name(siri, "clicked");
@@ -341,6 +353,7 @@ static void home_search_calls_typed_number(void)
     GtkWidget *search = find_search(window, "Search contacts or enter a number");
     g_assert_nonnull(search);
     gtk_editable_set_text(GTK_EDITABLE(search), "019 999");
+    wait_search();
     GtkWidget *call = find_button(window, "Call 019 999");
     g_assert_nonnull(call);
     g_signal_emit_by_name(call, "clicked");
@@ -348,6 +361,7 @@ static void home_search_calls_typed_number(void)
     g_assert_cmpint(event.index, ==, -1);
     g_assert_cmpstr(event.value, ==, "019 999");
     gtk_editable_set_text(GTK_EDITABLE(search), "Ahmed");
+    wait_search();
     g_assert_null(find_button(window, "Call Ahmed"));
     gtk_window_destroy(GTK_WINDOW(window));
     g_free(event.value);
@@ -560,7 +574,7 @@ static guint8 pixel_alpha(cairo_surface_t *surface, int x, int y)
     return cairo_image_surface_get_data(surface)[y * cairo_image_surface_get_stride(surface) + x * 4 + 3];
 }
 
-/* iPhone-style Recents: the whole row calls back, no Call button, centred 80% separators between rows. */
+/* iPhone-style Recents: the whole row calls back, no Call button, centred 90% separators between rows. */
 static void recent_rows_call_back_and_have_centred_separators(void)
 {
     MockUiModel model;
@@ -601,11 +615,11 @@ static void recent_rows_call_back_and_have_centred_separators(void)
     gsk_render_node_draw(node, cr);
     cairo_surface_flush(surface);
     int y = height / 2;
-    g_assert_cmpint(pixel_alpha(surface, width * 5 / 100, y), ==, 0);
-    g_assert_cmpint(pixel_alpha(surface, width * 12 / 100, y), >, 0);
+    g_assert_cmpint(pixel_alpha(surface, width * 2 / 100, y), ==, 0);
+    g_assert_cmpint(pixel_alpha(surface, width * 7 / 100, y), >, 0);
     g_assert_cmpint(pixel_alpha(surface, width / 2, y), >, 0);
-    g_assert_cmpint(pixel_alpha(surface, width * 88 / 100, y), >, 0);
-    g_assert_cmpint(pixel_alpha(surface, width * 95 / 100, y), ==, 0);
+    g_assert_cmpint(pixel_alpha(surface, width * 93 / 100, y), >, 0);
+    g_assert_cmpint(pixel_alpha(surface, width * 98 / 100, y), ==, 0);
     cairo_destroy(cr);
     cairo_surface_destroy(surface);
     gsk_render_node_unref(node);
@@ -614,6 +628,59 @@ static void recent_rows_call_back_and_have_centred_separators(void)
     g_ptr_array_unref(lines);
     gtk_window_destroy(GTK_WINDOW(window));
     g_free(event.value);
+    g_object_unref(app);
+}
+
+static GtkWidget *first_recent_row(GtkWidget *root)
+{
+    GPtrArray *rows = g_ptr_array_new();
+    collect_class(root, "recent-row", rows);
+    GtkWidget *first = rows->len ? rows->pdata[0] : NULL;
+    g_ptr_array_unref(rows);
+    return first;
+}
+
+static guint count_class(GtkWidget *root, const char *css)
+{
+    GPtrArray *found = g_ptr_array_new();
+    collect_class(root, css, found);
+    guint count = found->len;
+    g_ptr_array_unref(found);
+    return count;
+}
+
+/* Long histories show 50 calls, then 50 more per "Show more"; unchanged data is not rebuilt. */
+static void recents_are_paged_and_not_rebuilt_without_changes(void)
+{
+    MockRecent many[120];
+    for (int i = 0; i < 120; i++)
+        many[i] = (MockRecent){ .name = mock_recents[0].name, .number = mock_recents[0].number,
+                                .kind = "Outgoing", .time = "Yesterday" };
+    const MockRecent *saved = mock_recents;
+    size_t saved_count = mock_recents_count;
+    mock_ui_set_data(mock_contacts, mock_contacts_count, many, 120, mock_favorites, mock_favorites_count);
+    MockUiModel model;
+    mock_ui_init(&model);
+    GtkApplication *app = gtk_application_new("org.iblueconnect.MockPagingTest", 0);
+    g_application_register(G_APPLICATION(app), NULL, NULL);
+    GtkWidget *window = mock_main_window_new(app, &model, NULL, NULL);
+    g_assert_cmpuint(count_class(window, "recent-row"), ==, 50);
+    g_object_set_data(G_OBJECT(first_recent_row(window)), "test-marker", GINT_TO_POINTER(1));
+    mock_main_window_update(window);
+    g_assert_nonnull(g_object_get_data(G_OBJECT(first_recent_row(window)), "test-marker"));
+    GtkWidget *more = find_button(window, "Show more");
+    g_assert_nonnull(more);
+    g_signal_emit_by_name(more, "clicked");
+    g_assert_cmpuint(count_class(window, "recent-row"), ==, 100);
+    g_signal_emit_by_name(find_button(window, "Show more"), "clicked");
+    g_assert_cmpuint(count_class(window, "recent-row"), ==, 120);
+    g_assert_null(find_button(window, "Show more"));
+    g_object_set_data(G_OBJECT(first_recent_row(window)), "test-marker", GINT_TO_POINTER(1));
+    mock_ui_set_data(mock_contacts, mock_contacts_count, many, 60, mock_favorites, mock_favorites_count);
+    mock_main_window_update(window);
+    g_assert_null(g_object_get_data(G_OBJECT(first_recent_row(window)), "test-marker")); /* Data changed: rebuilt. */
+    gtk_window_destroy(GTK_WINDOW(window));
+    mock_ui_set_data(mock_contacts, mock_contacts_count, saved, saved_count, mock_favorites, mock_favorites_count);
     g_object_unref(app);
 }
 
@@ -771,6 +838,7 @@ int main(int argc, char **argv)
     g_test_add_func("/main/keyboard-shortcuts", keyboard_shortcuts);
     g_test_add_func("/main/proportions", comfortable_proportions);
     g_test_add_func("/main/recent-rows", recent_rows_call_back_and_have_centred_separators);
+    g_test_add_func("/main/recent-paging", recents_are_paged_and_not_rebuilt_without_changes);
     g_test_add_func("/main/title-centered", title_is_centered);
     g_test_add_func("/main/live-mode", live_mode_hides_mock_controls);
     g_test_add_func("/main/safe-exit", live_exit_controls_dispatch_guarded_actions);

@@ -110,6 +110,8 @@ extern const MockContact *mock_contacts;
 extern size_t mock_contacts_count;
 extern const MockRecent *mock_recents;
 extern size_t mock_recents_count;
+/* Bumped whenever the lists change, so views rebuild only then. */
+extern unsigned mock_data_version;
 extern const size_t *mock_favorites;
 extern size_t mock_favorites_count;
 extern const MockAudioDevice mock_audio_devices[];

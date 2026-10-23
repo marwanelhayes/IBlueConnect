@@ -40,8 +40,8 @@ Live integration status:
 | Floating incoming/active controller | Follows daemon call state; incoming calls launch the controller in background mode with Ignore, Decline, and Answer. |
 | Dialing, mute, in-call keypad, hold/resume, add/merge/end calls | Connected to daemon operations; full live acceptance is still pending for several controls. |
 | Device status, contacts, recents, battery, two voice indicators | Connected to daemon data; smooth outgoing waveform follows the source feeding the call, incoming voice fills a small bar. Outgoing waveform is flat while muted; it does not confirm remote audibility. |
-| Siri over Bluetooth | Siri button on the connection card starts Siri on the iPhone (HFP voice recognition); speak and hear Siri through the laptop, e.g. "FaceTime audio Mom". Needs a ready link, no calls, unlocked screen. Live behavior pending. |
-| Recents | iPhone-style rows: tap a person to call back; centred separator lines. Planned: "!" button showing all recent calls with that person. |
+| Siri over Bluetooth | "Ask Siri" button in its own row under the connection card starts Siri on the iPhone (HFP voice recognition); speak and hear Siri through the laptop, e.g. "FaceTime audio Mom". Needs a ready link, no calls, unlocked screen. Live behavior pending. |
+| Recents | iPhone-style rows: tap a person to call back; centred separator lines (90% of width); latest 50 calls with "Show more". Planned: "!" button showing all recent calls with that person; virtualized lists for large phone books. |
 | Lock privacy and guarded exit controls | Current source hides private windows while locked. Quit, Disconnect, and confirmed Forget require fresh idle state; active or uncertain calls block exit because automatic audio handoff is unavailable. |
 | Audio transfer and preferences | Laptop/phone transfer is not implemented; preference switches exist only in developer mode and are not persisted. |
 
