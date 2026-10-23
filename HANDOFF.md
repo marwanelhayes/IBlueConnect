@@ -2,6 +2,10 @@
 
 Date: 2026-09-24. Workspace: `/home/marwan-ahmed/Work/IBlueConnect`. Supersedes the older /tmp handoffs.
 
+## 2026-10-23 (late) project license: GPL-3.0-or-later
+
+User decision. Added `LICENSE` (FSF GPL-3.0 text copied from Ubuntu's `/usr/share/common-licenses/GPL-3`, sha256 3972dc97…6986), `license = "GPL-3.0-or-later"` in `Cargo.toml`, a README "License" section, a license line in the `.deb` copyright file, and updated AGENTS.md/V2.md (license no longer deferred; SSPL code such as rustpush must remain a separate program). Rationale: the packaged RNNoise plugin is already GPL-3.0, GPL is the GNOME norm, and all dependencies (MIT/Apache crates, LGPL GTK/libadwaita, D-Bus services) are compatible. Not legal advice. Committed and pushed to `main`.
+
 ## 2026-10-23 (late) controller buttons on one row — UI installed
 
 User: widen the popup so all icons fit one row and reduce the height. Hold / Resume / Merge / Swap / Add call moved from a second `call_management` row into `active-actions` as icon-over-caption tiles (pause, play, system-users, playlist-repeat, list-add icons; captions hidden in compact mode). The non-resizable window grows to its natural width (≈460 px for a typical live call with Hold and Add call, or with Swap and Merge) and loses the second row; incoming/outgoing states keep the 360 px minimum. `/popup/controller-style` (failed first) asserts Hold and Add call share the row and Hold's caption; the old ≤332 px row-width assertion was removed by design. 49 UI tests pass on 26.04 and 24.04; renders inspected. UI-only install, self-test OK. At the user's request for a test build, the UI was rebuilt from a clean `git archive` of `98d619c`, reinstalled, and the running UI process (still old code) was terminated and relaunched with `--background` during the active call (daemon untouched; it already matched HEAD — no Rust changes since `2b0d89b`). After relaunch: one UI process, daemon `ready/active`.

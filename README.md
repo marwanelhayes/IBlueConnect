@@ -235,3 +235,9 @@ The current machine has demonstrated app-originated calling, contact and call-hi
 - Full accessibility/privacy acceptance and live resource/CPU targets. Native package memory measurements are above; the open-window memory target is not met in the isolated test.
 
 See the [V1 acceptance matrix](IBlueConnect_Spec.md#13-acceptance-matrix) and [latest handoff](HANDOFF.md). The matrix's introductory "all other rows remain Not tested" statement predates later implementation and test records; use the dated evidence rather than treating that paragraph as current results.
+
+## License
+
+IBlueConnect is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version (`GPL-3.0-or-later`). It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; see [LICENSE](LICENSE) for the full text.
+
+The packaged RNNoise plugin ([noise-suppression-for-voice](https://github.com/werman/noise-suppression-for-voice)) is GPL-3.0 with its own notices, shipped alongside the package.

@@ -50,6 +50,7 @@ install -m644 "$upstream/LICENSE" "$doc/noise-suppression-for-voice-LICENSE"
 install -m644 "$upstream/external/rnnoise/COPYING" "$doc/RNNoise-COPYING"
 cat > "$doc/copyright" <<'EOF'
 IBlueConnect source: https://github.com/marwanelhayes/IBlueConnect
+ License: GPL-3.0-or-later; full text in /usr/share/common-licenses/GPL-3.
 noise-suppression-for-voice v1.10 (LADSPA plugin):
  https://github.com/werman/noise-suppression-for-voice/tree/v1.10
  Its GPL-3.0 license and RNNoise copyright notice accompany this package.
