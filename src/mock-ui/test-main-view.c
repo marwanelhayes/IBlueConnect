@@ -109,7 +109,14 @@ static void connected_home(void)
     g_assert_nonnull(find_label(window, "Dial"));
     g_assert_nonnull(find_label(window, "iPhone connected · Calls ready"));
     g_assert_true(ADW_IS_AVATAR(find_avatar(window, "Ahmed Mohamed")));
-    GtkWidget *missed = find_label(window, "Missed");
+    const MockRecent *first_missed = NULL;
+    for (size_t i = 0; i < mock_recents_count && !first_missed; i++)
+        if (g_ascii_strcasecmp(mock_recents[i].kind, "Missed") == 0 && !mock_recents[i].duration)
+            first_missed = &mock_recents[i];
+    g_assert_nonnull(first_missed);
+    char *missed_text = g_strdup_printf("Missed · %s", first_missed->time);
+    GtkWidget *missed = find_label(window, missed_text);
+    g_free(missed_text);
     g_assert_nonnull(missed);
     g_assert_true(gtk_widget_has_css_class(missed, "error"));
     for (GtkWidget *w = missed; w; w = gtk_widget_get_parent(w)) {
@@ -248,6 +255,35 @@ static void add_call_opens_the_keypad(void)
     g_assert_cmpstr(adw_view_stack_get_visible_child_name(ADW_VIEW_STACK(pages)), ==, "dial");
     g_assert_nonnull(find_button(window, "Add call"));
     gtk_window_destroy(GTK_WINDOW(window));
+    g_object_unref(app);
+}
+
+static void siri_button_starts_siri_only_when_idle(void)
+{
+    MockUiModel model;
+    mock_ui_init(&model);
+    model.live = true;
+    Event event = {0};
+    GtkApplication *app = gtk_application_new("org.iblueconnect.MockSiriTest", 0);
+    g_application_register(G_APPLICATION(app), NULL, NULL);
+    GtkWidget *window = mock_main_window_new(app, &model, on_action, &event);
+    GtkWidget *pages = find_pages(window);
+    adw_view_stack_set_visible_child_name(ADW_VIEW_STACK(pages), "dial");
+    GtkWidget *siri = find_button(adw_view_stack_get_visible_child(ADW_VIEW_STACK(pages)), "Siri");
+    g_assert_nonnull(siri);
+    g_assert_true(gtk_widget_is_sensitive(siri));
+    g_signal_emit_by_name(siri, "clicked");
+    g_assert_cmpint(event.count, ==, 1);
+    g_assert_cmpint(event.action, ==, MOCK_MAIN_SIRI);
+    model.call_count = 1;
+    mock_main_window_update(window);
+    g_assert_false(gtk_widget_is_sensitive(siri));
+    model.call_count = 0;
+    model.calls_unavailable = true;
+    mock_main_window_update(window);
+    g_assert_false(gtk_widget_is_sensitive(siri));
+    gtk_window_destroy(GTK_WINDOW(window));
+    g_free(event.value);
     g_object_unref(app);
 }
 
@@ -503,6 +539,53 @@ static void title_is_centered(void)
     g_object_unref(app);
 }
 
+static void collect_row_calls(GtkWidget *root, GPtrArray *calls)
+{
+    if (GTK_IS_BUTTON(root) && g_strcmp0(gtk_button_get_label(GTK_BUTTON(root)), "Call") == 0 &&
+        ADW_IS_AVATAR(gtk_widget_get_first_child(gtk_widget_get_parent(root))))
+        g_ptr_array_add(calls, root);
+    for (GtkWidget *child = gtk_widget_get_first_child(root); child; child = gtk_widget_get_next_sibling(child))
+        collect_row_calls(child, calls);
+}
+
+/* The date sits under the name, and every Call button lines up just after the widest text column. */
+static void recent_call_buttons_align_beside_names(void)
+{
+    MockUiModel model;
+    mock_ui_init(&model);
+    GtkApplication *app = gtk_application_new("org.iblueconnect.MockRecentRowsTest", 0);
+    g_application_register(G_APPLICATION(app), NULL, NULL);
+    GtkWidget *window = mock_main_window_new(app, &model, NULL, NULL);
+    gtk_window_set_default_size(GTK_WINDOW(window), 900, 640);
+    gtk_window_present(GTK_WINDOW(window));
+    GtkWidget *pages = find_pages(window);
+    adw_view_stack_set_visible_child_name(ADW_VIEW_STACK(pages), "recents");
+    for (int i = 0; i < 20; i++) while (g_main_context_iteration(NULL, FALSE));
+    GtkWidget *recents = adw_view_stack_get_visible_child(ADW_VIEW_STACK(pages));
+    GPtrArray *calls = g_ptr_array_new();
+    collect_row_calls(recents, calls);
+    g_assert_cmpuint(calls->len, >=, 3);
+    float first_x = -1, widest_name_end = 0;
+    for (guint i = 0; i < calls->len; i++) {
+        GtkWidget *call = calls->pdata[i];
+        g_assert_null(gtk_widget_get_next_sibling(call));
+        graphene_rect_t box;
+        g_assert_true(gtk_widget_compute_bounds(call, recents, &box));
+        if (first_x < 0) first_x = box.origin.x;
+        g_assert_cmpfloat_with_epsilon(box.origin.x, first_x, 0.5);
+        GtkWidget *text = gtk_widget_get_prev_sibling(call);
+        graphene_rect_t name;
+        g_assert_true(gtk_widget_compute_bounds(text, recents, &name));
+        int natural = 0;
+        gtk_widget_measure(text, GTK_ORIENTATION_HORIZONTAL, -1, NULL, &natural, NULL, NULL);
+        widest_name_end = MAX(widest_name_end, name.origin.x + natural);
+    }
+    g_assert_cmpfloat(first_x - widest_name_end, <=, 40);
+    g_ptr_array_unref(calls);
+    gtk_window_destroy(GTK_WINDOW(window));
+    g_object_unref(app);
+}
+
 static void comfortable_proportions(void)
 {
     MockUiModel model;
@@ -648,6 +731,7 @@ int main(int argc, char **argv)
     g_test_add_func("/main/search-dial-empty", search_dial_and_empty_states);
     g_test_add_func("/main/default-keypad", default_window_keeps_keypad_visible);
     g_test_add_func("/main/add-call-keypad", add_call_opens_the_keypad);
+    g_test_add_func("/main/siri", siri_button_starts_siri_only_when_idle);
     g_test_add_func("/main/adaptive-contacts", contacts_adapt_to_window_width);
     g_test_add_func("/main/search-number", home_search_calls_typed_number);
     g_test_add_func("/main/contact-details", contact_details);
@@ -655,6 +739,7 @@ int main(int argc, char **argv)
     g_test_add_func("/main/preferences", preferences);
     g_test_add_func("/main/keyboard-shortcuts", keyboard_shortcuts);
     g_test_add_func("/main/proportions", comfortable_proportions);
+    g_test_add_func("/main/recent-rows", recent_call_buttons_align_beside_names);
     g_test_add_func("/main/title-centered", title_is_centered);
     g_test_add_func("/main/live-mode", live_mode_hides_mock_controls);
     g_test_add_func("/main/safe-exit", live_exit_controls_dispatch_guarded_actions);

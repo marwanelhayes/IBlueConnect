@@ -161,6 +161,14 @@ impl OfonoBackend {
             .filter(|level| *level <= 5)
     }
 
+    /// HFP voice recognition (AT+BVRA): Siri on the phone, heard and answered through the laptop.
+    /// Starting needs no calls in progress; stopping is always allowed.
+    pub fn set_voice_assistant(&self, active: bool) -> Result<(), OfonoError> {
+        if active { self.require(|calls| calls.is_empty())?; }
+        let handsfree = Proxy::new(&self.connection, "org.ofono", self.modem.as_str(), "org.ofono.Handsfree")?;
+        handsfree.call("SetProperty", &("VoiceRecognition", zbus::zvariant::Value::from(active))).map_err(Into::into)
+    }
+
     /// Reconciles authoritative oFono call state; route remains unknown here.
     pub fn snapshot(&self) -> Result<Observation, OfonoError> {
         let calls = self.calls()?;
@@ -664,6 +672,39 @@ mod tests {
         fn get_properties(&self) -> Properties {
             HashMap::from([("BatteryChargeLevel".to_owned(), OwnedValue::from(5u8))])
         }
+    }
+
+    struct VoiceHandsfree(Arc<Mutex<Option<bool>>>);
+
+    #[zbus::interface(name = "org.ofono.Handsfree")]
+    impl VoiceHandsfree {
+        fn set_property(&self, name: &str, value: OwnedValue) -> zbus::fdo::Result<()> {
+            assert_eq!(name, "VoiceRecognition");
+            *self.0.lock().unwrap() = Some(bool::try_from(value).unwrap());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn siri_starts_only_without_calls_and_can_always_stop() {
+        let (_bus, address) = PrivateBus::start();
+        let voice = Arc::new(Mutex::new(None));
+        let state = Arc::new(Mutex::new(MockState { call_state: Some("active"), ..Default::default() }));
+        let _server = Builder::address(address.as_str()).unwrap()
+            .name("org.ofono").unwrap()
+            .serve_at("/", MockManager).unwrap()
+            .serve_at("/test_modem", MockCalls(state.clone())).unwrap()
+            .serve_at("/test_modem", VoiceHandsfree(voice.clone())).unwrap()
+            .build().unwrap();
+        let client = Builder::address(address.as_str()).unwrap().build().unwrap();
+        let backend = OfonoBackend::connect_on(client).unwrap();
+        assert_eq!(backend.set_voice_assistant(true), Err(OfonoError::StaleCall));
+        assert_eq!(*voice.lock().unwrap(), None);
+        backend.set_voice_assistant(false).unwrap();
+        assert_eq!(*voice.lock().unwrap(), Some(false));
+        state.lock().unwrap().call_state = None;
+        backend.set_voice_assistant(true).unwrap();
+        assert_eq!(*voice.lock().unwrap(), Some(true));
     }
 
     #[test]

@@ -1,5 +1,9 @@
 # Feasibility record
 
+## 2026-10-23 BlueZ crash reports are mpris-proxy
+
+Private read-only triage: `bluetoothd` has not crashed (0 restarts, four boots clean). Ubuntu's notices are `mpris-proxy` (bluez 5.85) SIGSEGVs, 14 in 30 days, mostly 2–5 s after the iPhone connects. IBlueConnect does not use mpris-proxy/MPRIS/AVRCP. Remedy options (mask or auto-restart the user service) await user approval.
+
 ## 2026-10-23 FaceTime call type and dual-SIM lines over HFP
 
 Desk research only; no phone probe. HFP's call reporting (`+CLCC`/`+CLIP`) and oFono's `VoiceCall` properties carry state, identifier, name and multiparty flags, but no call type and no SIM/line. HFP 1.8 defines no line-selection command; dialing uses whatever line the iPhone chooses. PBAP call-history vCards record direction and time without a FaceTime marker. Whether iOS exposes FaceTime/CallKit calls over HFP on this pairing is **not tested**. An email-form identifier would indicate FaceTime; numeric identifiers would not distinguish it. A probe would require a user-arranged incoming FaceTime call and must record only counts and identifier form.

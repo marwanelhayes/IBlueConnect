@@ -8,7 +8,7 @@ typedef struct {
     GtkWidget *window, *screen, *pages, *device, *device_status;
     GtkWidget *device_calls, *device_contacts, *device_audio, *device_battery, *device_sync;
     GtkWidget *recents_box, *contacts_box, *detail, *contact_search;
-    GtkWidget *home_search, *dial_entry, *dial_match, *dial_button;
+    GtkWidget *home_search, *dial_entry, *dial_match, *dial_button, *siri_button;
     GtkWidget *split, *sync_error, *calls_error, *connection_card, *link_status;
     int selected_contact;
 } MainView;
@@ -67,9 +67,17 @@ static gboolean can_call(const MainView *self)
            (!self->model->live || self->model->call_count == 0 || self->model->can_add_call);
 }
 
+/* Siri can start calls (including FaceTime Audio), so it needs a ready link and no call in progress. */
+static gboolean can_ask_siri(const MainView *self)
+{
+    return self->model->connection == MOCK_CONNECTION_CONNECTED && !self->model->calls_unavailable &&
+           self->model->call_count == 0;
+}
+
 static void emit(MainView *self, MockMainAction action, int index, const char *value)
 {
     if (action == MOCK_MAIN_CALL && !can_call(self)) return;
+    if (action == MOCK_MAIN_SIRI && !can_ask_siri(self)) return;
     if (self->callback) self->callback(action, index, value, self->user_data);
 }
 
@@ -363,15 +371,20 @@ static void render_recents(MainView *self)
             found++;
         }
     } else {
+        /* Equal-width text columns keep every Call button aligned right beside the names. */
+        GtkSizeGroup *names = gtk_size_group_new(GTK_SIZE_GROUP_HORIZONTAL);
         for (size_t i = 0; i < mock_recents_count && !self->model->empty_recents; i++) {
             const MockRecent *recent = &mock_recents[i];
-            char *summary = recent->duration ? g_strdup_printf("%s · %s", recent->kind, recent->duration)
-                                              : g_strdup(recent->kind);
+            char *summary = recent->duration
+                ? g_strdup_printf("%s · %s · %s", recent->kind, recent->duration, recent->time)
+                : g_strdup_printf("%s · %s", recent->kind, recent->time);
             GtkWidget *row = person_row(self, recent->name ? recent->name : recent->number, summary,
                                         mock_ui_contact_named(recent->name), recent->number);
             g_free(summary);
-            GtkWidget *when = text_label(recent->time, "dim-label");
-            gtk_box_append(GTK_BOX(row), when);
+            GtkWidget *text = gtk_widget_get_next_sibling(gtk_widget_get_first_child(row));
+            gtk_widget_set_hexpand(text, FALSE);
+            gtk_label_set_max_width_chars(GTK_LABEL(gtk_widget_get_first_child(text)), 24);
+            gtk_size_group_add_widget(names, text);
             if (g_ascii_strcasecmp(recent->kind, "Missed") == 0) {
                 GtkWidget *copy = gtk_widget_get_next_sibling(gtk_widget_get_first_child(row));
                 for (GtkWidget *l = gtk_widget_get_first_child(copy); l; l = gtk_widget_get_next_sibling(l))
@@ -380,6 +393,7 @@ static void render_recents(MainView *self)
             gtk_box_append(GTK_BOX(self->recents_box), row);
             found++;
         }
+        g_object_unref(names);
     }
     if (!found) gtk_box_append(GTK_BOX(self->recents_box),
         empty_state(*query ? "system-search-symbolic" : "view-list-symbolic",
@@ -462,6 +476,13 @@ static GtkWidget *build_dial(MainView *self)
     gtk_box_append(GTK_BOX(page), grid);
     GtkWidget *actions = hbox(12);
     gtk_widget_set_halign(actions, GTK_ALIGN_CENTER);
+    self->siri_button = gtk_button_new_with_label("Siri");
+    gtk_widget_add_css_class(self->siri_button, "pill");
+    gtk_widget_set_tooltip_text(self->siri_button,
+        "Talk to Siri on your iPhone through this laptop, for example \"FaceTime audio Mom\"");
+    g_object_set_data(G_OBJECT(self->siri_button), "mock-action", GINT_TO_POINTER(MOCK_MAIN_SIRI));
+    g_signal_connect(self->siri_button, "clicked", G_CALLBACK(action_clicked), self);
+    gtk_box_append(GTK_BOX(actions), self->siri_button);
     self->dial_button = gtk_button_new_with_label("Call");
     gtk_widget_add_css_class(self->dial_button, "suggested-action");
     gtk_widget_add_css_class(self->dial_button, "pill");
@@ -885,6 +906,7 @@ void mock_main_window_update(GtkWidget *window)
     render_contacts(self);
     render_detail(self);
     gtk_button_set_label(GTK_BUTTON(self->dial_button), self->model->can_add_call ? "Add call" : "Call");
+    gtk_widget_set_sensitive(self->siri_button, can_ask_siri(self));
     dial_changed(GTK_EDITABLE(self->dial_entry), self);
 }
 

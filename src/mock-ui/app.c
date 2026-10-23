@@ -109,6 +109,8 @@ static void on_call_reply(GObject *source, GAsyncResult *result, gpointer data)
     load_snapshot(data);
 }
 
+static void on_siri(GObject *source, GAsyncResult *result, gpointer data);
+
 static void on_answer(GObject *source, GAsyncResult *result, gpointer data)
 {
     MockApp *app = data;
@@ -573,6 +575,22 @@ static void request_safe_exit(MockApp *app, MockMainAction action)
                       10000, NULL, on_safe_exit, request);
 }
 
+static void on_siri(GObject *source, GAsyncResult *result, gpointer data)
+{
+    MockApp *app = data;
+    GError *error = NULL;
+    GVariant *value = g_dbus_proxy_call_finish(G_DBUS_PROXY(source), result, &error);
+    if (value) g_variant_unref(value);
+    else {
+        g_dbus_error_strip_remote_error(error);
+        GtkWidget *dialog = exit_dialog(app, "Siri unavailable", error->message);
+        adw_message_dialog_add_response(ADW_MESSAGE_DIALOG(dialog), "close", "Close");
+        adw_message_dialog_set_close_response(ADW_MESSAGE_DIALOG(dialog), "close");
+        show_exit_dialog(app, dialog);
+    }
+    g_clear_error(&error);
+}
+
 static void on_forget_response(AdwMessageDialog *dialog, const char *response, gpointer data)
 {
     (void)dialog;
@@ -613,6 +631,8 @@ static void main_action(MockMainAction action, int contact_index,
             load_snapshot(app);
         else if (action == MOCK_MAIN_RESUME)
             call_daemon(app, "ResumeMonitoring", NULL, on_call_reply);
+        else if (action == MOCK_MAIN_SIRI)
+            call_daemon(app, "SetVoiceAssistant", g_variant_new("(b)", TRUE), on_siri);
         else if (action == MOCK_MAIN_CONNECT) {
             GError *error = NULL;
             if (!g_spawn_command_line_async("gnome-control-center bluetooth", &error)) {
@@ -644,6 +664,7 @@ static void main_action(MockMainAction action, int contact_index,
     case MOCK_MAIN_QUIT:
     case MOCK_MAIN_FORGET:
     case MOCK_MAIN_RESUME:
+    case MOCK_MAIN_SIRI:
         break;
     case MOCK_MAIN_SYNC:
         app->model.contact_sync_error = false;

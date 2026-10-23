@@ -47,6 +47,7 @@ enum Operation {
     SetMuted(bool),
     SafeExit(ExitAction),
     ResumeMonitoring,
+    VoiceAssistant(bool),
     Contacts,
     SyncContacts,
     Recents,
@@ -164,6 +165,9 @@ impl Service {
     fn safe_exit(&self, action: &str) -> zbus::fdo::Result<()> {
         self.command(Operation::SafeExit(ExitAction::parse(action)?))
     }
+
+    /// Start or stop Siri on the phone over the hands-free link (HFP voice recognition).
+    fn set_voice_assistant(&self, active: bool) -> zbus::fdo::Result<()> { self.command(Operation::VoiceAssistant(active)) }
 
     /// Resume monitoring after a manual reconnect; never initiates the Bluetooth link.
     fn resume_monitoring(&self) -> zbus::fdo::Result<()> { self.command(Operation::ResumeMonitoring) }
@@ -391,6 +395,9 @@ impl Worker {
         if let Err(message) = self.guard_operation(&operation) {
             return Reply::Done(Err(message.into()));
         }
+        if let Operation::VoiceAssistant(active) = operation {
+            return Reply::Done(self.ofono.as_ref().unwrap().set_voice_assistant(active).map_err(|error| error.to_string()));
+        }
         if matches!(operation, Operation::Hold(_) | Operation::Resume(_) | Operation::AddCall(_) | Operation::Merge | Operation::EndCall(_) | Operation::EndConference
                 | Operation::Swap | Operation::PrivateChat(_) | Operation::HoldAndAnswer(_) | Operation::ReleaseAndAnswer(_)) {
             let ofono = self.ofono.as_ref().unwrap();
@@ -416,7 +423,7 @@ impl Worker {
             Operation::Action(action, id) => self.backend.plan_action(action, &id),
             Operation::Dial(number) => self.backend.plan_dial(&number),
             Operation::Tone(id, tone) => self.backend.plan_tone(&id, tone),
-            Operation::Snapshot | Operation::SnapshotDetails | Operation::Calls | Operation::CallAudio | Operation::CallAudioDetails | Operation::SetMuted(_) | Operation::Contacts | Operation::SyncContacts | Operation::Recents | Operation::BatteryStatus | Operation::SafeExit(_) | Operation::ResumeMonitoring
+            Operation::Snapshot | Operation::SnapshotDetails | Operation::Calls | Operation::CallAudio | Operation::CallAudioDetails | Operation::SetMuted(_) | Operation::Contacts | Operation::SyncContacts | Operation::Recents | Operation::BatteryStatus | Operation::SafeExit(_) | Operation::ResumeMonitoring | Operation::VoiceAssistant(_)
                 | Operation::Hold(_) | Operation::Resume(_) | Operation::AddCall(_) | Operation::Merge | Operation::EndCall(_) | Operation::EndConference
                 | Operation::Swap | Operation::PrivateChat(_) | Operation::HoldAndAnswer(_) | Operation::ReleaseAndAnswer(_) => unreachable!(),
         };
@@ -770,14 +777,18 @@ fn observe_location() -> AudioLocation {
 }
 
 fn answer_guard(operation: &Operation, read_locked: impl FnOnce() -> Option<bool>) -> Result<(), &'static str> {
-    if matches!(operation, Operation::Action(CallAction::Answer, _) | Operation::HoldAndAnswer(_) | Operation::ReleaseAndAnswer(_)) {
-        match read_locked() {
-            Some(false) => Ok(()),
-            Some(true) => Err("Unlock the screen before answering"),
-            None => Err("Screen lock state unavailable; answer on the phone"),
-        }
-    } else {
-        Ok(())
+    let (locked, unknown) = match operation {
+        Operation::Action(CallAction::Answer, _) | Operation::HoldAndAnswer(_) | Operation::ReleaseAndAnswer(_) =>
+            ("Unlock the screen before answering", "Screen lock state unavailable; answer on the phone"),
+        // Siri can place calls and read phone data, so it gets the same unlocked-screen guard.
+        Operation::VoiceAssistant(true) =>
+            ("Unlock the screen before using Siri", "Screen lock state unavailable; use Siri on the phone"),
+        _ => return Ok(()),
+    };
+    match read_locked() {
+        Some(false) => Ok(()),
+        Some(true) => Err(locked),
+        None => Err(unknown),
     }
 }
 
@@ -1106,6 +1117,10 @@ mod tests {
             assert!(answer_guard(&operation, || None).is_err());
         }
         assert!(answer_guard(&Operation::Swap, || panic!("lock query should be skipped")).is_ok());
+        assert!(answer_guard(&Operation::VoiceAssistant(true), || Some(false)).is_ok());
+        assert!(answer_guard(&Operation::VoiceAssistant(true), || Some(true)).is_err());
+        assert!(answer_guard(&Operation::VoiceAssistant(true), || None).is_err());
+        assert!(answer_guard(&Operation::VoiceAssistant(false), || panic!("stopping Siri needs no lock query")).is_ok());
         assert!(answer_guard(&Operation::PrivateChat("call-1".into()), || panic!("lock query should be skipped")).is_ok());
     }
 
