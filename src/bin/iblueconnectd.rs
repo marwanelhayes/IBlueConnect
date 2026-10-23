@@ -43,7 +43,10 @@ enum Operation {
     EndConference,
     Tone(String, char),
     CallAudio,
+    CallAudioDetails,
     SetMuted(bool),
+    SafeExit(ExitAction),
+    ResumeMonitoring,
     Contacts,
     SyncContacts,
     Recents,
@@ -55,6 +58,7 @@ enum Reply {
     SnapshotDetails(SnapshotDetails),
     Calls(String, CallList),
     CallAudio(u64, bool),
+    CallAudioDetails(u64, u64, bool),
     Done(Result<(), String>),
     Contacts(String, ContactList),
     Recents(String, RecentList),
@@ -84,6 +88,18 @@ impl ListenerEpoch {
 }
 
 struct Service(Sender<Message>);
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ExitAction { Quit, Disconnect, Forget }
+
+impl ExitAction {
+    fn parse(action: &str) -> zbus::fdo::Result<Self> {
+        match action {
+            "quit" => Ok(Self::Quit), "disconnect" => Ok(Self::Disconnect), "forget" => Ok(Self::Forget),
+            _ => Err(zbus::fdo::Error::InvalidArgs("Choose quit, disconnect, or forget".into())),
+        }
+    }
+}
 
 impl Service {
     fn request(&self, operation: Operation) -> zbus::fdo::Result<Reply> {
@@ -135,6 +151,22 @@ impl Service {
         }
     }
     fn set_muted(&self, muted: bool) -> zbus::fdo::Result<()> { self.command(Operation::SetMuted(muted)) }
+
+    /// (Incoming voice serial, source feeding outgoing HFP serial or 0, outgoing mute).
+    fn call_audio_details(&self) -> zbus::fdo::Result<(u64, u64, bool)> {
+        match self.request(Operation::CallAudioDetails)? {
+            Reply::CallAudioDetails(incoming, outgoing, muted) => Ok((incoming, outgoing, muted)),
+            Reply::Done(Err(message)) => Err(zbus::fdo::Error::Failed(message)),
+            _ => unreachable!(),
+        }
+    }
+
+    fn safe_exit(&self, action: &str) -> zbus::fdo::Result<()> {
+        self.command(Operation::SafeExit(ExitAction::parse(action)?))
+    }
+
+    /// Resume monitoring after a manual reconnect; never initiates the Bluetooth link.
+    fn resume_monitoring(&self) -> zbus::fdo::Result<()> { self.command(Operation::ResumeMonitoring) }
 
     fn contacts(&self) -> zbus::fdo::Result<(String, ContactList)> {
         match self.request(Operation::Contacts)? {
@@ -202,6 +234,8 @@ struct Worker {
     presenter: Presenter,
     contacts: Contacts,
     mute_checked: bool,
+    paused: bool,
+    quit_at: Option<Instant>,
 }
 
 impl Worker {
@@ -210,7 +244,7 @@ impl Worker {
             Ok(history) => Some(history),
             Err(_) => { eprintln!("Call history unavailable"); None }
         });
-        Self { backend: Backend::new(), history, ofono: None, tx, session, lock_session, epoch: ListenerEpoch::default(), calls: Vec::new(), multi_pending: None, presenter: Presenter::new(), contacts: Contacts::open(), mute_checked: false }
+        Self { backend: Backend::new(), history, ofono: None, tx, session, lock_session, epoch: ListenerEpoch::default(), calls: Vec::new(), multi_pending: None, presenter: Presenter::new(), contacts: Contacts::open(), mute_checked: false, paused: false, quit_at: None }
     }
 
     fn reconcile(&mut self, calls: &[OfonoCall]) {
@@ -266,6 +300,7 @@ impl Worker {
     }
 
     fn refresh(&mut self) -> Result<(), String> {
+        if self.paused { return Err("Monitoring paused. Resume monitoring after connecting the iPhone manually.".into()); }
         if self.ofono.is_none() {
             let ofono = OfonoBackend::connect().map_err(|error| error.to_string())?;
             let mut events = ofono.subscribe().map_err(|error| error.to_string())?;
@@ -293,6 +328,16 @@ impl Worker {
     }
 
     fn handle(&mut self, operation: Operation) -> Reply {
+        if let Operation::SafeExit(action) = operation {
+            return Reply::Done(self.safe_exit(action).map_err(str::to_owned));
+        }
+        if let Operation::ResumeMonitoring = operation {
+            if self.quit_at.is_some() { return Reply::Done(Err("IBlueConnect is quitting".into())); }
+            self.paused = false;
+            let _ = self.refresh();
+            self.changed();
+            return Reply::Done(Ok(()));
+        }
         if let Operation::Contacts = operation {
             return Reply::Contacts(self.contacts.status(), self.contacts.list());
         }
@@ -310,24 +355,32 @@ impl Worker {
         if let Operation::Snapshot = operation {
             let contacts = matches!(self.backend.observation(), Observation::Call(_))
                 .then(|| self.contacts.entries()).unwrap_or_default();
-            return Reply::Snapshot(public_snapshot(refreshed.is_ok(), self.backend.observation(), &self.calls, &contacts));
+            let mut snapshot = public_snapshot(refreshed.is_ok(), self.backend.observation(), &self.calls, &contacts);
+            if self.paused { snapshot.0 = "monitoring paused".into(); }
+            return Reply::Snapshot(snapshot);
         }
         if let Operation::SnapshotDetails = operation {
             let contacts = matches!(self.backend.observation(), Observation::Call(_))
                 .then(|| self.contacts.entries()).unwrap_or_default();
-            return Reply::SnapshotDetails(public_snapshot_details(refreshed.is_ok(), self.backend.observation(), &self.calls, &contacts));
+            let mut snapshot = public_snapshot_details(refreshed.is_ok(), self.backend.observation(), &self.calls, &contacts);
+            if self.paused { snapshot.0 = "monitoring paused".into(); }
+            return Reply::SnapshotDetails(snapshot);
         }
         if let Operation::Calls = operation {
-            return Reply::Calls(if refreshed.is_ok() { "ready" } else { "calling unavailable" }.into(),
+            return Reply::Calls(if self.paused { "monitoring paused" } else if refreshed.is_ok() { "ready" } else { "calling unavailable" }.into(),
                 if refreshed.is_ok() { public_calls(&self.calls, self.backend.observation(), &self.contacts.entries()) } else { Vec::new() });
         }
         if let Err(message) = refreshed { return Reply::Done(Err(message)); }
-        if let Operation::CallAudio | Operation::SetMuted(_) = operation {
+        if let Operation::CallAudio | Operation::CallAudioDetails | Operation::SetMuted(_) = operation {
             let streams = if self.calls.is_empty() { None } else { observe_call_streams() };
             let Some(streams) = streams else { return Reply::Done(Err("Call audio is not on this laptop".into())) };
             self.reset_mute(Some(&streams));
             return match operation {
                 Operation::SetMuted(muted) => Reply::Done(set_call_muted(streams.capture_id, muted).map_err(|error| error.to_string())),
+                Operation::CallAudioDetails => match observe_call_streams() {
+                    Some(now) => Reply::CallAudioDetails(now.playback_serial, now.capture_source_serial.unwrap_or(0), now.muted),
+                    None => Reply::Done(Err("Call audio is not on this laptop".into())),
+                },
                 // Re-read: reset_mute may have just cleared a restored mute.
                 _ => Reply::CallAudio(streams.playback_serial, observe_call_streams().is_some_and(|now| now.muted)),
             };
@@ -363,7 +416,7 @@ impl Worker {
             Operation::Action(action, id) => self.backend.plan_action(action, &id),
             Operation::Dial(number) => self.backend.plan_dial(&number),
             Operation::Tone(id, tone) => self.backend.plan_tone(&id, tone),
-            Operation::Snapshot | Operation::SnapshotDetails | Operation::Calls | Operation::CallAudio | Operation::SetMuted(_) | Operation::Contacts | Operation::SyncContacts | Operation::Recents | Operation::BatteryStatus
+            Operation::Snapshot | Operation::SnapshotDetails | Operation::Calls | Operation::CallAudio | Operation::CallAudioDetails | Operation::SetMuted(_) | Operation::Contacts | Operation::SyncContacts | Operation::Recents | Operation::BatteryStatus | Operation::SafeExit(_) | Operation::ResumeMonitoring
                 | Operation::Hold(_) | Operation::Resume(_) | Operation::AddCall(_) | Operation::Merge | Operation::EndCall(_) | Operation::EndConference
                 | Operation::Swap | Operation::PrivateChat(_) | Operation::HoldAndAnswer(_) | Operation::ReleaseAndAnswer(_) => unreachable!(),
         };
@@ -419,6 +472,99 @@ impl Worker {
     fn guard_operation(&self, operation: &Operation) -> Result<(), &'static str> {
         answer_guard(operation, || screen_locked(&self.lock_session))
     }
+
+    fn safe_exit(&mut self, action: ExitAction) -> Result<(), &'static str> {
+        if screen_locked(&self.lock_session) != Some(false) { return Err("Unlock the screen before exiting or changing phone data."); }
+        let bus = Connection::system().map_err(|_| "Bluetooth state is unavailable; keep IBlueConnect running.")?;
+        let devices = bluetooth_devices(&bus)?;
+        let phone = self.ofono.as_ref().and_then(|ofono| ofono.bluetooth_path()).map(str::to_owned);
+        let fresh_calls = self.ofono.as_ref().and_then(|ofono| ofono.calls().ok());
+        let calls = fresh_calls.as_ref().map(Vec::len)
+            .or_else(|| devices.iter().all(|(_, connected)| !connected).then_some(0));
+        safe_exit_guard(calls, hfp_nodes_present(),
+            self.contacts.running || self.multi_pending.is_some() || self.backend.has_pending_command())?;
+        if let Some(calls) = fresh_calls { self.reconcile(&calls); }
+        if action != ExitAction::Quit {
+            match phone {
+                Some(path) => {
+                    let connected = devices.iter().find(|(device, _)| device == &path)
+                        .map(|(_, connected)| *connected).ok_or("Phone Bluetooth state is unavailable.")?;
+                    if connected {
+                        // Recheck immediately before the only link-changing command.
+                        let calls = self.ofono.as_ref().and_then(|ofono| ofono.calls().ok()).map(|calls| calls.len());
+                        safe_exit_guard(calls, hfp_nodes_present(), self.contacts.running)?;
+                    }
+                    disconnect_bluetooth(&bus, &path)?;
+                }
+                None if devices.iter().any(|(_, connected)| *connected) => return Err("The connected phone cannot be identified safely. Disconnect it in Bluetooth Settings and try again."),
+                None => {}
+            }
+        }
+        self.paused = true;
+        self.unavailable();
+        self.changed();
+        if action == ExitAction::Forget {
+            // No pending sync can repopulate either cache after the verified disconnection.
+            self.contacts.store.as_mut().ok_or("Contact cache is unavailable; phone disconnected but data was not cleared.")?
+                .clear().map_err(|_| "Could not clear cached contacts and phone history.")?;
+            self.contacts.failed = false;
+            self.presenter = Presenter::new();
+            self.contacts_changed();
+            self.recents_changed();
+            self.history.as_mut().ok_or("Cached contacts and phone history were cleared, but local call history is unavailable.")?
+                .clear().map_err(|_| "Cached contacts and phone history were cleared, but local call history could not be cleared.")?;
+            self.recents_changed();
+        }
+        if action == ExitAction::Quit {
+            // Allow the successful D-Bus reply to flush before the daemon exits normally.
+            self.quit_at = Some(Instant::now() + Duration::from_millis(250));
+        }
+        Ok(())
+    }
+}
+
+fn bluetooth_devices(bus: &Connection) -> Result<Vec<(String, bool)>, &'static str> {
+    use std::collections::HashMap;
+    use zbus::zvariant::{OwnedObjectPath, OwnedValue};
+    type Objects = HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>>;
+    let manager = Proxy::new(bus, "org.bluez", "/", "org.freedesktop.DBus.ObjectManager")
+        .map_err(|_| "Bluetooth state is unavailable.")?;
+    let objects: Objects = manager.call("GetManagedObjects", &()).map_err(|_| "Bluetooth state is unavailable.")?;
+    objects.into_iter().filter_map(|(path, mut interfaces)| {
+        interfaces.remove("org.bluez.Device1").map(|properties| {
+            let connected = properties.get("Connected").and_then(|value| bool::try_from(value).ok())
+                .ok_or("Bluetooth connection state is unknown.")?;
+            Ok((path.to_string(), connected))
+        })
+    }).collect()
+}
+
+fn disconnect_bluetooth(bus: &Connection, path: &str) -> Result<(), &'static str> {
+    let device: Proxy<'_> = zbus::blocking::proxy::Builder::new(bus).destination("org.bluez")
+        .and_then(|builder| builder.path(path)).and_then(|builder| builder.interface("org.bluez.Device1"))
+        .map_err(|_| "Phone disconnect is unavailable.")?
+        .cache_properties(zbus::proxy::CacheProperties::No).build()
+        .map_err(|_| "Phone disconnect is unavailable.")?;
+    let connected: bool = device.get_property("Connected").map_err(|_| "Phone connection state is unknown.")?;
+    if connected { device.call::<_, _, ()>("Disconnect", &()).map_err(|_| "Phone disconnect failed; no data was cleared.")?; }
+    match device.get_property::<bool>("Connected") {
+        Ok(false) => Ok(()),
+        _ => Err("Phone disconnect could not be verified; no data was cleared. Check Bluetooth Settings and try again."),
+    }
+}
+
+fn hfp_nodes_present() -> Option<bool> {
+    let output = std::process::Command::new("pw-dump").output().ok()?;
+    if !output.status.success() { return None; }
+    parse_hfp_nodes(&output.stdout)
+}
+
+fn parse_hfp_nodes(json: &[u8]) -> Option<bool> {
+    let objects: Vec<serde_json::Value> = serde_json::from_slice(json).ok()?;
+    if objects.iter().any(|object| !object["type"].is_string()
+        || (object["type"] == "PipeWire:Interface:Node" && !object["info"]["props"].is_object())) { return None; }
+    Some(objects.iter().any(|object| object["type"] == "PipeWire:Interface:Node"
+        && object["info"]["props"]["api.bluez5.profile"] == "headset-audio-gateway"))
 }
 
 /// Contact cache plus the state of the one background PBAP download.
@@ -707,6 +853,15 @@ fn mute_reset(checked: bool, streams: Option<&CallStreams>) -> (bool, bool) {
     }
 }
 
+fn safe_exit_guard(calls: Option<usize>, hfp_nodes: Option<bool>, pending: bool) -> Result<(), &'static str> {
+    if pending { return Err("Another call or contact-sync action is pending. Try again when it finishes."); }
+    if calls != Some(0) {
+        return Err("Call state is active or unknown. Automatic audio handoff is unavailable; finish the call on the iPhone and try again.");
+    }
+    if hfp_nodes != Some(false) { return Err("Call audio is active or unknown. Keep IBlueConnect running and try again after the call ends."); }
+    Ok(())
+}
+
 fn next_message(rx: &Receiver<Message>, timeout: Duration) -> Option<Message> {
     match rx.recv_timeout(timeout) {
         Ok(message) => Some(message),
@@ -732,7 +887,12 @@ fn run_worker(rx: Receiver<Message>, tx: Sender<Message>, session: Connection, l
     let mut worker = Worker::new(tx, session, lock_session);
     let mut retry_attempt = 0usize;
     let _ = worker.refresh();
-    while let Some(message) = next_message(&rx, if worker.ofono.is_some() { Duration::from_secs(5) } else { retry_delay(retry_attempt) }) {
+    loop {
+        let timeout = if let Some(at) = worker.quit_at {
+            let Some(remaining) = at.checked_duration_since(Instant::now()) else { break };
+            remaining
+        } else if worker.ofono.is_some() { Duration::from_secs(5) } else { retry_delay(retry_attempt) };
+        let Some(message) = next_message(&rx, timeout) else { break };
         match message {
             Message::Request(operation, reply) => { let _ = reply.send(worker.handle(operation)); }
             Message::Changed(epoch) if worker.epoch.accepts(epoch) => {
@@ -742,7 +902,7 @@ fn run_worker(rx: Receiver<Message>, tx: Sender<Message>, session: Connection, l
                 worker.unavailable(); retry_attempt = 0; worker.changed();
             }
             // A reconnected phone is picked up at once; the back-off retry remains the fallback.
-            Message::Retry | Message::ModemChanged if worker.ofono.is_none() => {
+            Message::Retry | Message::ModemChanged if worker.ofono.is_none() && !worker.paused => {
                 if worker.refresh().is_ok() {
                     retry_attempt = 0;
                     worker.changed();
@@ -750,7 +910,7 @@ fn run_worker(rx: Receiver<Message>, tx: Sender<Message>, session: Connection, l
                     retry_attempt = retry_attempt.saturating_add(1);
                 }
             }
-            Message::Retry => {
+            Message::Retry if !worker.paused => {
                 // Also detect a vanished oFono service if it could not emit ModemRemoved.
                 let before = worker.backend.observation().clone();
                 let lost = worker.refresh().is_err();
@@ -787,6 +947,61 @@ mod tests {
     use iblueconnect::call_log::{Kind, PhoneCall};
     use std::io::{BufRead, BufReader};
     use std::process::{Child, Command as ProcessCommand, Stdio};
+
+    #[test]
+    fn safe_exit_requires_fresh_idle_and_no_call_audio() {
+        assert!(safe_exit_guard(Some(0), Some(false), false).is_ok());
+        for calls in [None, Some(1), Some(2)] {
+            assert!(safe_exit_guard(calls, Some(false), false).is_err());
+        }
+        assert!(safe_exit_guard(Some(0), None, false).is_err());
+        assert!(safe_exit_guard(Some(0), Some(true), false).is_err());
+        assert!(safe_exit_guard(Some(0), Some(false), true).is_err());
+    }
+
+    #[test]
+    fn safe_exit_rejects_malformed_graph_and_even_one_hfp_node() {
+        assert_eq!(parse_hfp_nodes(b"[]"), Some(false));
+        assert_eq!(parse_hfp_nodes(b"broken"), None);
+        assert_eq!(parse_hfp_nodes(b"[{}]"), None);
+        assert_eq!(parse_hfp_nodes(br#"[{"type":"PipeWire:Interface:Node"}]"#), None);
+        assert_eq!(parse_hfp_nodes(br#"[{"type":"PipeWire:Interface:Node","info":{"props":{"api.bluez5.profile":"headset-audio-gateway"}}}]"#), Some(true));
+    }
+
+    struct ExitDevice(std::sync::Arc<std::sync::Mutex<(bool, bool, usize)>>);
+
+    #[zbus::interface(name = "org.bluez.Device1")]
+    impl ExitDevice {
+        fn disconnect(&self) {
+            let mut state = self.0.lock().unwrap();
+            state.2 += 1;
+            if state.1 { state.0 = false; }
+        }
+        #[zbus(property)]
+        fn connected(&self) -> bool { self.0.lock().unwrap().0 }
+    }
+
+    #[test]
+    fn safe_disconnect_requires_observed_bluetooth_disconnect() {
+        let (_bus, address) = PrivateBus::start();
+        let state = std::sync::Arc::new(std::sync::Mutex::new((true, false, 0)));
+        let _server = Builder::address(address.as_str()).unwrap().name("org.bluez").unwrap()
+            .serve_at("/test_device", ExitDevice(state.clone())).unwrap().build().unwrap();
+        let client = Builder::address(address.as_str()).unwrap().build().unwrap();
+        assert!(disconnect_bluetooth(&client, "/test_device").is_err());
+        assert_eq!(*state.lock().unwrap(), (true, false, 1));
+        state.lock().unwrap().1 = true;
+        assert!(disconnect_bluetooth(&client, "/test_device").is_ok());
+        assert_eq!(*state.lock().unwrap(), (false, true, 2));
+        assert!(disconnect_bluetooth(&client, "/test_device").is_ok());
+        assert_eq!(state.lock().unwrap().2, 2);
+    }
+
+    #[test]
+    fn invalid_exit_action_is_rejected_before_any_request() {
+        assert!(ExitAction::parse("hangup").is_err());
+        for action in ["quit", "disconnect", "forget"] { assert!(ExitAction::parse(action).is_ok()); }
+    }
 
     struct PrivateBus(Child);
 
@@ -832,7 +1047,7 @@ mod tests {
                 backend: Backend::new(), history: None, ofono: None, tx,
                 session,
                 lock_session, epoch: ListenerEpoch::default(), calls: Vec::new(), multi_pending: None, presenter: Presenter::new(),
-                contacts: Contacts { store: None, running: false, failed: false }, mute_checked: false,
+                contacts: Contacts { store: None, running: false, failed: false }, mute_checked: false, paused: false, quit_at: None,
             };
             if let Some(Message::Request(Operation::Action(CallAction::Answer, _), reply)) = rx.recv().ok() {
                 let allowed = worker.guard_operation(&Operation::Action(CallAction::Answer, "test".into()));
@@ -1137,7 +1352,7 @@ mod tests {
     #[test]
     fn a_new_call_starts_unmuted_but_the_users_mute_holds_through_handoff() {
         use iblueconnect::audio::CallStreams;
-        let stream = |serial, muted| CallStreams { playback_serial: 1, capture_id: 2, capture_serial: serial, muted };
+        let stream = |serial, muted| CallStreams { playback_serial: 1, capture_id: 2, capture_serial: serial, capture_source_serial: None, muted };
         // WirePlumber may restore the mute a previous call ended with: clear it once per call.
         assert_eq!(mute_reset(false, Some(&stream(7, true))), (true, true));
         assert_eq!(mute_reset(false, Some(&stream(7, false))), (true, false));

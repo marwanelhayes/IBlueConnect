@@ -549,7 +549,7 @@ static void live_mode_hides_mock_controls(void)
     GtkApplication *app = gtk_application_new("org.iblueconnect.MockLiveTest", 0);
     g_application_register(G_APPLICATION(app), NULL, NULL);
     GtkWidget *window = mock_main_window_new(app, &model, on_action, &event);
-    g_assert_false(gtk_widget_get_visible(find_button(window, "Disconnect")));
+    g_assert_true(gtk_widget_get_visible(find_button(window, "Disconnect")));
     g_assert_false(gtk_widget_get_visible(find_tooltip(window, "Preferences")));
     GtkWidget *number = find_dial_entry(window);
     gtk_editable_set_text(GTK_EDITABLE(number), "123");
@@ -575,6 +575,46 @@ static void live_mode_hides_mock_controls(void)
     g_assert_nonnull(settings);
     g_signal_emit_by_name(settings, "clicked");
     g_assert_cmpint(event.action, ==, MOCK_MAIN_CONNECT);
+    gtk_window_destroy(GTK_WINDOW(window));
+    g_free(event.value);
+    g_object_unref(app);
+}
+
+static void live_exit_controls_dispatch_guarded_actions(void)
+{
+    MockUiModel model;
+    mock_ui_init(&model);
+    model.live = true;
+    Event event = {0};
+    GtkApplication *app = gtk_application_new("org.iblueconnect.MockExitTest", 0);
+    g_application_register(G_APPLICATION(app), NULL, NULL);
+    GtkWidget *window = mock_main_window_new(app, &model, on_action, &event);
+    const struct { const char *label, *name; MockMainAction action; } actions[] = {
+        { "Disconnect", "safe-disconnect", MOCK_MAIN_DISCONNECT },
+        { "Resume call monitoring", "resume-monitoring", MOCK_MAIN_RESUME },
+        { "Forget phone…", "safe-forget", MOCK_MAIN_FORGET },
+        { "Quit IBlueConnect", "safe-quit", MOCK_MAIN_QUIT }
+    };
+    /* Keep exit requests available during a call: the backend checks fresh state. */
+    model.call = MOCK_CALL_ACTIVE;
+    mock_main_window_update(window);
+    for (guint i = 0; i < G_N_ELEMENTS(actions); i++) {
+        GtkWidget *button = find_button(window, actions[i].label);
+        g_assert_nonnull(button);
+        g_assert_true(gtk_widget_get_visible(button));
+        g_assert_true(gtk_widget_get_sensitive(button));
+        g_assert_cmpstr(gtk_widget_get_name(button), ==, actions[i].name);
+        g_assert_nonnull(gtk_widget_get_tooltip_text(button));
+        g_signal_emit_by_name(button, "clicked");
+        g_assert_cmpint(event.action, ==, actions[i].action);
+        g_assert_cmpint(event.count, ==, i + 1);
+        g_assert_null(event.value);
+    }
+    gtk_window_destroy(GTK_WINDOW(window));
+    model.live = false;
+    window = mock_main_window_new(app, &model, on_action, &event);
+    for (guint i = 1; i < G_N_ELEMENTS(actions); i++)
+        g_assert_false(gtk_widget_get_visible(find_button(window, actions[i].label)));
     gtk_window_destroy(GTK_WINDOW(window));
     g_free(event.value);
     g_object_unref(app);
@@ -617,6 +657,7 @@ int main(int argc, char **argv)
     g_test_add_func("/main/proportions", comfortable_proportions);
     g_test_add_func("/main/title-centered", title_is_centered);
     g_test_add_func("/main/live-mode", live_mode_hides_mock_controls);
+    g_test_add_func("/main/safe-exit", live_exit_controls_dispatch_guarded_actions);
     g_test_add_func("/main/utf8-sections", non_ascii_names_get_letter_sections);
     return g_test_run();
 }

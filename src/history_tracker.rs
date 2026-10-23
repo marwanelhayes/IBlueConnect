@@ -42,6 +42,15 @@ impl HistoryTracker {
         self.store.recent()
     }
 
+    /// Called only after verified idle disconnection, so no ongoing record is discarded.
+    pub fn clear(&mut self) -> io::Result<()> {
+        self.store.clear()?;
+        self.current = None;
+        self.waiting.clear();
+        self.session_changed = false;
+        Ok(())
+    }
+
     pub fn backend_lost(&mut self, now: SystemTime) {
         self.session_changed = true;
         for waiting in std::mem::take(&mut self.waiting) {

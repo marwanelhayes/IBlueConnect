@@ -21,6 +21,7 @@ pub struct CallStreams {
     pub playback_serial: u64,
     pub capture_id: u64,
     pub capture_serial: u64,
+    pub capture_source_serial: Option<u64>,
     pub muted: bool,
 }
 
@@ -55,7 +56,16 @@ pub fn parse_call_streams(json: &str) -> Result<Option<CallStreams>, serde_json:
         (serial(playback), capture["id"].as_u64(), serial(capture)) else { return Ok(None) };
     let muted = capture["info"]["params"]["Props"].as_array().into_iter().flatten()
         .any(|props| props["mute"] == true);
-    Ok(Some(CallStreams { playback_serial, capture_id, capture_serial, muted }))
+    let sources: HashSet<_> = objects.iter().filter(|object|
+        object["type"] == "PipeWire:Interface:Link" && object["info"]["state"] == "active"
+        && object["info"]["input-node-id"].as_u64() == Some(capture_id))
+        .filter_map(|object| object["info"]["output-node-id"].as_u64()).collect();
+    let capture_source_serial = if sources.len() == 1 {
+        objects.iter().find(|object| object["type"] == "PipeWire:Interface:Node"
+            && object["id"].as_u64().is_some_and(|id| sources.contains(&id))
+            && object["info"]["props"]["media.class"] == "Audio/Source").and_then(serial)
+    } else { None };
+    Ok(Some(CallStreams { playback_serial, capture_id, capture_serial, capture_source_serial, muted }))
 }
 
 /// Mutes only the call's outgoing HFP stream; the Ubuntu microphone and the iPhone mic are untouched.
@@ -215,12 +225,26 @@ mod tests {
             .replace("\"api.bluez5.profile\":\"headset-audio-gateway\",\"device.id\":99}}}",
                      "\"api.bluez5.profile\":\"headset-audio-gateway\",\"device.id\":99,\"object.serial\":502},\"params\":{\"Props\":[{\"mute\":true}]}}}");
         assert_eq!(parse_call_streams(&json).unwrap(),
-                   Some(CallStreams { playback_serial: 501, capture_id: 2, capture_serial: 502, muted: true }));
+                   Some(CallStreams { playback_serial: 501, capture_id: 2, capture_serial: 502, capture_source_serial: None, muted: true }));
         let unmuted = json.replace("\"mute\":true", "\"mute\":false");
         assert!(!parse_call_streams(&unmuted).unwrap().unwrap().muted);
         assert_eq!(parse_call_streams("[]").unwrap(), None);
         let mixed = json.replacen("\"device.id\":99", "\"device.id\":100", 1);
         assert_eq!(parse_call_streams(&mixed).unwrap(), None);
+    }
+
+    #[test]
+    fn microphone_meter_uses_only_the_source_actually_feeding_the_call() {
+        let graph = ROUTED
+            .replace("\"device.id\":99", "\"device.id\":99,\"object.serial\":501")
+            .replace("\"node.description\":\"Wired input\"", "\"node.description\":\"Wired input\",\"object.serial\":504");
+        assert_eq!(parse_call_streams(&graph).unwrap().unwrap().capture_source_serial, Some(504));
+        let inactive = graph.replace("\"state\":\"active\"", "\"state\":\"paused\"");
+        assert_eq!(parse_call_streams(&inactive).unwrap().unwrap().capture_source_serial, None);
+        let ambiguous = graph.replace("\"id\":6,", "\"id\":7,\"type\":\"PipeWire:Interface:Link\",\"info\":{\"output-node-id\":3,\"input-node-id\":2,\"state\":\"active\"}},{\"id\":6,");
+        assert_eq!(parse_call_streams(&ambiguous).unwrap().unwrap().capture_source_serial, None);
+        let filtered = graph.replace("Wired input", "Call noise filter");
+        assert_eq!(parse_call_streams(&filtered).unwrap().unwrap().capture_source_serial, Some(504));
     }
 
     #[test]

@@ -146,6 +146,12 @@ impl OfonoBackend {
         modem_address(&self.modem)
     }
 
+    /// The existing BlueZ device only; never creates a Bluetooth connection.
+    pub fn bluetooth_path(&self) -> Option<&str> {
+        self.phone_address()?;
+        self.modem.strip_prefix("/hfp").filter(|path| path.starts_with("/org/bluez/"))
+    }
+
     /// HFP reports the phone's battery in six coarse steps (0–5), not an exact percentage.
     pub fn battery_level(&self) -> Option<u8> {
         let handsfree = Proxy::new(&self.connection, "org.ofono", self.modem.as_str(), "org.ofono.Handsfree").ok()?;

@@ -9,7 +9,8 @@
 #endif
 
 struct MockCallPopup {
-    GtkWidget *window, *avatar, *audio_content, *end_content, *identity, *number, *subtitle, *timer, *waveform;
+    GtkWidget *window, *avatar, *audio_content, *end_content, *identity, *number, *subtitle, *timer, *incoming_level;
+    GtkWidget *waveform, *levels;
     GtkWidget *incoming, *outgoing, *active, *call_management, *hold_button, *resume_button, *merge_button, *terminal, *details;
     GtkWidget *compact_button, *expand_button, *mute_button, *keypad_button, *keypad, *tone_feedback, *open_app_button, *end_button;
     GtkWidget *audio_button, *audio_popover, *audio_choices, *audio_empty;
@@ -22,7 +23,9 @@ struct MockCallPopup {
     MockCall phase;
     gboolean held;
     gboolean keypad_open;
-    double voice[9]; /* Recent smoothed levels of the other person's voice, newest last. */
+    double incoming_voice;
+    double microphone[33]; /* Measured envelope, newest last; no animation without new levels. */
+    gboolean microphone_enabled;
 #ifdef GDK_WINDOWING_X11
     guint placement_tick;
 #endif
@@ -280,13 +283,8 @@ static gboolean place_after_resize(gpointer data)
 
 static void show_voice(MockCallPopup *popup)
 {
-    static const char *bars[] = {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
-    GString *text = g_string_new(NULL);
-    for (guint i = 0; i < G_N_ELEMENTS(popup->voice); i++)
-        g_string_append(text, bars[(int)(CLAMP(popup->voice[i], 0.0, 1.0) * 7 + 0.5)]);
-    gtk_label_set_text(GTK_LABEL(popup->waveform), text->str);
-    g_string_free(text, TRUE);
-    gboolean speaking = popup->voice[G_N_ELEMENTS(popup->voice) - 1] >= SPEAKING_LEVEL;
+    gtk_level_bar_set_value(GTK_LEVEL_BAR(popup->incoming_level), popup->incoming_voice);
+    gboolean speaking = popup->incoming_voice >= SPEAKING_LEVEL;
     if (speaking) {
         gtk_widget_add_css_class(popup->avatar, "speaking");
         gtk_widget_add_css_class(popup->identity, "speaking");
@@ -298,11 +296,42 @@ static void show_voice(MockCallPopup *popup)
 
 void mock_call_popup_set_voice(MockCallPopup *popup, double level)
 {
-    guint last = G_N_ELEMENTS(popup->voice) - 1;
-    double previous = popup->voice[last];
-    memmove(popup->voice, popup->voice + 1, last * sizeof popup->voice[0]);
-    popup->voice[last] = MAX(level, previous * 0.7); /* Fast attack, short release: no flicker between syllables. */
+    popup->incoming_voice = MAX(CLAMP(level, 0.0, 1.0), popup->incoming_voice * 0.7);
     show_voice(popup);
+}
+
+static void draw_microphone(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer data)
+{
+    MockCallPopup *popup = data;
+    GdkRGBA color;
+    gtk_style_context_get_color(gtk_widget_get_style_context(GTK_WIDGET(area)), &color);
+    gdk_cairo_set_source_rgba(cr, &color);
+    cairo_set_line_width(cr, 2.0);
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    double step = (width - 4.0) / (G_N_ELEMENTS(popup->microphone) - 1);
+    double center = height / 2.0, amplitude = (height - 6.0) / 2.0;
+    cairo_move_to(cr, 2, center);
+    for (guint i = 1; i < G_N_ELEMENTS(popup->microphone); i++) {
+        double x = 2 + (i - 1) * step;
+        double previous = center + (i % 2 ? 1 : -1) * popup->microphone[i - 1] * amplitude;
+        double next = center + (i % 2 ? -1 : 1) * popup->microphone[i] * amplitude;
+        cairo_curve_to(cr, x + step / 2, previous, x + step / 2, next, x + step, next);
+    }
+    cairo_stroke(cr);
+}
+
+void mock_call_popup_set_microphone_level(MockCallPopup *popup, double level)
+{
+    if (level < 0) {
+        memset(popup->microphone, 0, sizeof popup->microphone);
+        gtk_widget_queue_draw(popup->waveform);
+        return;
+    }
+    if (!popup->microphone_enabled) return;
+    guint last = G_N_ELEMENTS(popup->microphone) - 1;
+    memmove(popup->microphone, popup->microphone + 1, last * sizeof popup->microphone[0]);
+    popup->microphone[last] = CLAMP(level, 0.0, 1.0);
+    gtk_widget_queue_draw(popup->waveform);
 }
 
 static const char *line_caller(const MockLine *line)
@@ -410,6 +439,8 @@ static void install_css(void)
     gtk_css_provider_load_from_string(css,
         "avatar.speaking { box-shadow: 0 0 0 3px @accent_bg_color; }"
         "label.speaking { color: @accent_color; }"
+        "#voice-waveform { color: @accent_color; }"
+        "#incoming-level block.filled { background-color: @accent_bg_color; }"
         "button.call-answer { background-color: #187833; background-image: none; color: #fff; }"
         "button.call-answer:hover { background-color: #1b803a; }"
         "button.call-answer:active { background-color: #14652b; }"
@@ -470,15 +501,32 @@ MockCallPopup *mock_call_popup_new(GtkApplication *app, MockCallPopupAction acti
     gtk_box_append(GTK_BOX(top), popup->open_app_button);
     gtk_box_append(GTK_BOX(body), top);
 
-    popup->details = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     popup->number = label("", "dim-label");
     gtk_widget_set_name(popup->number, "caller-number");
     gtk_box_append(GTK_BOX(body), popup->number);
-    popup->waveform = label("", "dim-label");
+    popup->levels = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_box_append(GTK_BOX(popup->levels), label("Your voice", "dim-label"));
+    popup->waveform = gtk_drawing_area_new();
     gtk_widget_set_name(popup->waveform, "voice-waveform");
+    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(popup->waveform), 34);
+    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(popup->waveform), draw_microphone, popup, NULL);
     gtk_accessible_update_property(GTK_ACCESSIBLE(popup->waveform), GTK_ACCESSIBLE_PROPERTY_LABEL,
-                                   "Audio activity", -1);
-    gtk_box_append(GTK_BOX(popup->details), popup->waveform);
+                                   "Your outgoing voice", -1);
+    gtk_widget_set_tooltip_text(popup->waveform, "Audio on the outgoing call path; reception is not confirmed");
+    gtk_box_append(GTK_BOX(popup->levels), popup->waveform);
+    GtkWidget *receiving = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_set_halign(receiving, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(receiving), label("Incoming audio", "dim-label"));
+    popup->incoming_level = gtk_level_bar_new_for_interval(0.0, 1.0);
+    gtk_widget_set_name(popup->incoming_level, "incoming-level");
+    gtk_widget_set_size_request(popup->incoming_level, 84, -1);
+    gtk_widget_set_valign(popup->incoming_level, GTK_ALIGN_CENTER);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(popup->incoming_level), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                   "Incoming audio level", -1);
+    gtk_box_append(GTK_BOX(receiving), popup->incoming_level);
+    gtk_box_append(GTK_BOX(popup->levels), receiving);
+    gtk_box_append(GTK_BOX(body), popup->levels);
+    popup->details = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     popup->keypad = make_keypad(popup);
     gtk_box_append(GTK_BOX(popup->details), popup->keypad);
     gtk_box_append(GTK_BOX(body), popup->details);
@@ -576,7 +624,6 @@ MockCallPopup *mock_call_popup_new(GtkApplication *app, MockCallPopupAction acti
     popup->terminal = label("", "heading");
     gtk_widget_set_name(popup->terminal, "terminal-label");
     gtk_box_append(GTK_BOX(body), popup->terminal);
-    memset(popup->voice, 0, sizeof popup->voice);
     show_voice(popup);
     gtk_widget_set_visible(window, FALSE);
     return popup;
@@ -589,6 +636,14 @@ void mock_call_popup_update(MockCallPopup *popup, const MockUiModel *model)
     gboolean incoming = model->call == MOCK_CALL_INCOMING;
     gboolean outgoing = model->call == MOCK_CALL_OUTGOING || model->call == MOCK_CALL_CONNECTING;
     gboolean active = model->call == MOCK_CALL_ACTIVE;
+    popup->microphone_enabled = active && !model->muted && !model->call_held &&
+                                (!model->live || model->call_audio);
+    if (!popup->microphone_enabled) {
+        memset(popup->microphone, 0, sizeof popup->microphone);
+        gtk_widget_queue_draw(popup->waveform);
+    }
+    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(popup->waveform), model->compact ? 20 : 34);
+    gtk_widget_set_visible(popup->levels, active);
     gboolean terminal = model->call == MOCK_CALL_DECLINED || model->call == MOCK_CALL_ENDING ||
                         model->call == MOCK_CALL_ENDED;
     if (!active || model->call_held) {
@@ -632,7 +687,6 @@ void mock_call_popup_update(MockCallPopup *popup, const MockUiModel *model)
     gtk_widget_set_visible(popup->expand_button, active && model->compact);
     gtk_widget_set_visible(popup->keypad_button, active && !model->compact && !model->call_held);
     gtk_widget_set_visible(popup->number, (incoming || outgoing || active) && !model->compact);
-    gtk_widget_set_visible(popup->waveform, active && !model->compact);
     gtk_widget_set_visible(popup->keypad, active && !model->compact && !model->call_held && popup->keypad_open);
     gtk_widget_set_visible(popup->timer, active);
     gtk_widget_set_visible(popup->open_app_button, incoming || active);
@@ -691,7 +745,7 @@ void mock_call_popup_update(MockCallPopup *popup, const MockUiModel *model)
     }
 #endif
     if (!active || model->call_held || (model->live && !model->call_audio)) {
-        memset(popup->voice, 0, sizeof popup->voice);
+        popup->incoming_voice = 0;
         show_voice(popup);
     }
 }

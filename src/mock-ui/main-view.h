@@ -9,7 +9,10 @@ typedef enum {
     MOCK_MAIN_CONNECT,
     MOCK_MAIN_DISCONNECT,
     MOCK_MAIN_RETRY,
-    MOCK_MAIN_SYNC
+    MOCK_MAIN_SYNC,
+    MOCK_MAIN_QUIT,
+    MOCK_MAIN_FORGET,
+    MOCK_MAIN_RESUME
 } MockMainAction;
 
 /* value is the dialed number for MOCK_MAIN_CALL with contact_index == -1. */

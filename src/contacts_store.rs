@@ -11,6 +11,13 @@ use crate::call_log::{Kind, PhoneCall, StoredCall};
 pub struct ContactStore(Connection);
 
 impl ContactStore {
+    /// Clears only app-owned cached data; Bluetooth pairing is untouched.
+    pub fn clear(&mut self) -> rusqlite::Result<()> {
+        let transaction = self.0.transaction()?;
+        transaction.execute_batch("DELETE FROM contacts; DELETE FROM phone_calls; DELETE FROM meta;")?;
+        transaction.commit()
+    }
+
     pub fn open(path: impl AsRef<Path>) -> rusqlite::Result<Self> {
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
@@ -109,6 +116,22 @@ mod tests {
         assert!(store.list().unwrap().is_empty());
         assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         assert_eq!(fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+
+    #[test]
+    fn forget_clears_contacts_phone_history_and_sync_metadata() {
+        let path = test_path();
+        let mut store = ContactStore::open(&path).unwrap();
+        store.replace_all(&[entry("Test", "Mobile", "1")], 100).unwrap();
+        store.replace_calls(&[PhoneCall { number: Some("1".into()), name: None, kind: Kind::Missed,
+            started_at: "2020-01-01 00:00:00".into(), utc: true }]).unwrap();
+        store.clear().unwrap();
+        drop(store);
+        let store = ContactStore::open(&path).unwrap();
+        assert!(store.list().unwrap().is_empty());
+        assert!(store.phone_calls().unwrap().is_empty());
+        assert_eq!(store.last_sync().unwrap(), None);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]

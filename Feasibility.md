@@ -1,5 +1,9 @@
 # Feasibility record
 
+## 2026-10-23 FaceTime call type and dual-SIM lines over HFP
+
+Desk research only; no phone probe. HFP's call reporting (`+CLCC`/`+CLIP`) and oFono's `VoiceCall` properties carry state, identifier, name and multiparty flags, but no call type and no SIM/line. HFP 1.8 defines no line-selection command; dialing uses whatever line the iPhone chooses. PBAP call-history vCards record direction and time without a FaceTime marker. Whether iOS exposes FaceTime/CallKit calls over HFP on this pairing is **not tested**. An email-form identifier would indicate FaceTime; numeric identifiers would not distinguish it. A probe would require a user-arranged incoming FaceTime call and must record only counts and identifier form.
+
 ## 2026-10-07 tethering connection versus call readiness
 
 While the user reported Bluetooth connected but calling unavailable, private read-only inspection found one connected paired/trusted device with incomplete service discovery and an unpowered/offline HFP modem without a call interface. All core services were active and the expected oFono configuration was installed. The user identified phone internet tethering as the connection in use and corrected it manually. A subsequent private check verified complete service discovery, a powered/online HFP modem with `VoiceCallManager`, and daemon `ready/idle` with no calls or call-audio nodes. No services or configuration were changed. This establishes recovered call readiness; the exact tethering interaction and live audio were not tested. See the 2026-10-07 entry in [HANDOFF.md](HANDOFF.md) for the offline regression and session details.

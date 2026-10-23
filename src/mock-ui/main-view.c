@@ -690,8 +690,24 @@ static GtkWidget *build_device_menu(MainView *self)
     gtk_box_append(GTK_BOX(box), self->device_sync);
     gtk_box_append(GTK_BOX(box), action_button("Sync Contacts", MOCK_MAIN_SYNC, self));
     GtkWidget *disconnect = action_button("Disconnect", MOCK_MAIN_DISCONNECT, self);
-    gtk_widget_set_visible(disconnect, !self->model->live); /* The user disconnects in Bluetooth settings. */
+    gtk_widget_set_name(disconnect, "safe-disconnect");
+    gtk_widget_set_tooltip_text(disconnect, "Disconnect only when your call is safe; this may be blocked until the call ends");
     gtk_box_append(GTK_BOX(box), disconnect);
+    GtkWidget *resume = action_button("Resume call monitoring", MOCK_MAIN_RESUME, self);
+    gtk_widget_set_name(resume, "resume-monitoring");
+    gtk_widget_set_tooltip_text(resume, "Resume monitoring an already-connected phone; connect Bluetooth manually");
+    gtk_widget_set_visible(resume, self->model->live);
+    gtk_box_append(GTK_BOX(box), resume);
+    GtkWidget *forget = action_button("Forget phone…", MOCK_MAIN_FORGET, self);
+    gtk_widget_set_name(forget, "safe-forget");
+    gtk_widget_set_tooltip_text(forget, "Remove app-owned phone data after confirmation; this may be blocked until the call ends");
+    gtk_widget_set_visible(forget, self->model->live);
+    gtk_box_append(GTK_BOX(box), forget);
+    GtkWidget *quit = action_button("Quit IBlueConnect", MOCK_MAIN_QUIT, self);
+    gtk_widget_set_name(quit, "safe-quit");
+    gtk_widget_set_tooltip_text(quit, "Stop IBlueConnect safely; this may be blocked until the call ends. Closing the window leaves monitoring running");
+    gtk_widget_set_visible(quit, self->model->live);
+    gtk_box_append(GTK_BOX(box), quit);
     gtk_popover_set_child(GTK_POPOVER(popover), box);
     return popover;
 }

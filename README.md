@@ -39,7 +39,8 @@ Live integration status:
 |---|---|
 | Floating incoming/active controller | Follows daemon call state; incoming calls launch the controller in background mode with Ignore, Decline, and Answer. |
 | Dialing, mute, in-call keypad, hold/resume, add/merge/end calls | Connected to daemon operations; full live acceptance is still pending for several controls. |
-| Device status, contacts, recents, battery, incoming voice meter | Connected to daemon data; contacts and history use private persistent caches. |
+| Device status, contacts, recents, battery, two voice indicators | Connected to daemon data; smooth outgoing waveform follows the source feeding the call, incoming voice fills a small bar. Outgoing waveform is flat while muted; it does not confirm remote audibility. |
+| Lock privacy and guarded exit controls | Current source hides private windows while locked. Quit, Disconnect, and confirmed Forget require fresh idle state; active or uncertain calls block exit because automatic audio handoff is unavailable. |
 | Audio transfer and preferences | Laptop/phone transfer is not implemented; preference switches exist only in developer mode and are not persisted. |
 
 X11 can place the mock call panel near the top-right and request above-window visibility. Wayland uses a normal GTK window because GNOME does not give applications reliable absolute placement. Headless UI tests do not establish live GNOME Shell behavior.
@@ -115,7 +116,7 @@ Closing the main window leaves the daemon running quietly. Incoming calls show t
 
 **Existing source installations:** this package refuses to replace a service in `~/.config/systemd/user/iblueconnectd.service`; migration requires manual review. For an app/OS upgrade, end calls, stop the old daemon with `systemctl --user stop iblueconnectd.service`, disconnect Bluetooth devices, install the matching package, and open the app for setup again. No automatic OS downgrade migration is promised.
 
-**Desktop/privacy limits:** X11 supports controller positioning; Wayland uses a normal GTK window without guaranteed placement/stacking. Full GNOME/Wayland acceptance remains pending. An already-visible controller is not reliably hidden/redacted on screen lock; do not rely on this preview for that privacy behavior.
+**Desktop/privacy limits:** X11 supports controller positioning; Wayland uses a normal GTK window without guaranteed placement/stacking. Full GNOME/Wayland acceptance remains pending. The October 23 source update adds fail-closed lock privacy for the main window, controller, and app dialogs, with private D-Bus tests; installed on the development laptop but not live-verified yet. Earlier installed binaries retain the lock privacy limitation.
 
 ### Expected RAM
 
@@ -214,18 +215,18 @@ Hardware acceptance requires user-operated calls. Tests and graph inspection alo
 
 The current machine has demonstrated app-originated calling, contact and call-history sync, and successful two-way call-only RNNoise filtering. This is a working milestone, not complete V1 acceptance. The Ubuntu upgrade configuration defect and filter-routing defect are fixed; automatic recovery from every transport failure is unproven.
 
-**Unsupported scope:** FaceTime Audio is unavailable over this HFP link. Android support, Bluetooth headset microphone support, multiple-phone selection, SMS/iMessage, contact editing, iCloud, screen mirroring, files/photos, and recording are not provided by this preview.
+**Unsupported scope:** FaceTime Audio is unavailable over this HFP link, and calls are not labeled as FaceTime (HFP reports no call type). Dual-SIM line choice is unavailable: HFP has no line selection, so the iPhone uses its default line or the contact's preferred line (set on the iPhone under the contact's line label). Android support, Bluetooth headset microphone support, multiple-phone selection, SMS/iMessage, contact editing, iCloud, screen mirroring, files/photos, and recording are not provided by this preview.
 
 ### Missing implementation
 
-- Persisted preferences/startup controls, separate optional sync consent, saved primary-phone selection, Forget phone, and Clear call history. The packaged first run now requests combined background/audio/sync consent, checks dependencies/state, and keeps backups; sync starts automatically when the manually connected phone becomes ready.
-- App-operated phone/laptop audio transfer, actual input/output display, Open Sound settings, and call-preserving Quit/Disconnect/Forget. The user currently connects and routes audio manually. Automatic laptop-initiated Bluetooth connection is excluded by the current user decision; older auto-connect wording in the spec is superseded.
-- Hiding/redacting an already-visible call controller when the screen locks. The daemon checks lock state before Answer and initial presentation, but its emitted hide effect is not executed by the current runner; full lock privacy is not implemented.
+- Persisted preferences/startup controls, separate optional sync consent, saved primary-phone selection, and standalone Clear call history. The packaged first run now requests combined background/audio/sync consent, checks dependencies/state, and keeps backups; sync starts automatically when the manually connected phone becomes ready. Guarded Forget is implemented in the October 23 source update.
+- App-operated phone/laptop audio transfer, actual input/output display, Open Sound settings, and exit during an ongoing call. New guarded Quit/Disconnect/Forget controls require fresh idle/zero-audio state and block active or uncertain calls; automatic handoff is unavailable. Disconnect/Forget pause monitoring until **Resume call monitoring** is chosen after manual connection. Automatic laptop-initiated Bluetooth connection remains excluded.
 - Silent notification-center entries/actions for locally observed missed calls. The presentation policy exists, but the current daemon effect runner does not execute those notification effects. Phone-synced missed calls must remain completely silent and only appear in Recents.
 
 ### Implemented but needing further verification
 
 - Live mute/reset/handoff behavior, remote IVR DTMF, Hold/Resume retest, and multi-call/conference controls.
+- New outgoing waveform/incoming bar, GNOME lock hiding/restoration, guarded exit/disconnect, and confirmed cache removal. These source changes require installation and user-operated desktop/call verification.
 - GNOME lock/DND behavior, one permitted alert, popup focus/keyboard behavior, and GUI crash/reopen behavior during a call. Some policy paths are tested offline; that does not establish full desktop acceptance.
 - Input/output changes and unplug/replug during calls, live manual disconnect, RNNoise-absent fallback, and recovery after transport failure.
 - Full accessibility/privacy acceptance and live resource/CPU targets. Native package memory measurements are above; the open-window memory target is not met in the isolated test.

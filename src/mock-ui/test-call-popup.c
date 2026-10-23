@@ -510,7 +510,7 @@ static void call_list_and_multi_call_actions(gconstpointer ignored)
     gtk_window_destroy(window);
 }
 
-static void voice_drives_waveform_and_speaking_glow(gconstpointer ignored)
+static void incoming_voice_fills_bar_and_speaking_glow(gconstpointer ignored)
 {
     (void)ignored;
     Fixture f = {0};
@@ -520,20 +520,20 @@ static void voice_drives_waveform_and_speaking_glow(gconstpointer ignored)
     mock_ui_answer(&f.model);
     mock_call_popup_update(f.popup, &f.model);
     GtkWindow *window = mock_call_popup_window(f.popup);
-    GtkWidget *wave = find(GTK_WIDGET(window), "voice-waveform");
+    GtkWidget *bar = find(GTK_WIDGET(window), "incoming-level");
     GtkWidget *avatar = find(GTK_WIDGET(window), "caller-avatar");
-    char *silent = g_strdup(gtk_label_get_text(GTK_LABEL(wave)));
-    g_assert_null(strstr(silent, "█"));
+    g_assert_true(GTK_IS_LEVEL_BAR(bar));
+    g_assert_cmpfloat(gtk_level_bar_get_value(GTK_LEVEL_BAR(bar)), ==, 0.0);
     /* No looping animation: without voice the shape stays still. */
     gint64 deadline = g_get_monotonic_time() + 600 * G_TIME_SPAN_MILLISECOND;
     while (g_get_monotonic_time() < deadline) {
         while (g_main_context_pending(NULL)) g_main_context_iteration(NULL, FALSE);
         g_usleep(5000);
     }
-    g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(wave)), ==, silent);
+    g_assert_cmpfloat(gtk_level_bar_get_value(GTK_LEVEL_BAR(bar)), ==, 0.0);
     g_assert_false(gtk_widget_has_css_class(avatar, "speaking"));
     mock_call_popup_set_voice(f.popup, 1.0);
-    g_assert_nonnull(strstr(gtk_label_get_text(GTK_LABEL(wave)), "█"));
+    g_assert_cmpfloat(gtk_level_bar_get_value(GTK_LEVEL_BAR(bar)), ==, 1.0);
     g_assert_true(gtk_widget_has_css_class(avatar, "speaking"));
     click(&f, "compact");
     mock_call_popup_set_voice(f.popup, 1.0);
@@ -547,8 +547,101 @@ static void voice_drives_waveform_and_speaking_glow(gconstpointer ignored)
     f.model.call_audio = false;
     mock_call_popup_update(f.popup, &f.model);
     g_assert_false(gtk_widget_has_css_class(avatar, "speaking"));
-    g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(wave)), ==, silent);
-    g_free(silent);
+    g_assert_cmpfloat(gtk_level_bar_get_value(GTK_LEVEL_BAR(bar)), ==, 0.0);
+    gtk_window_destroy(window);
+}
+
+static GBytes *wave_pixels(GtkWidget *wave)
+{
+    gint64 deadline = g_get_monotonic_time() + 60 * G_TIME_SPAN_MILLISECOND;
+    while (g_get_monotonic_time() < deadline) {
+        while (g_main_context_pending(NULL)) g_main_context_iteration(NULL, FALSE);
+        g_usleep(1000);
+    }
+    int width = gtk_widget_get_width(wave), height = gtk_widget_get_height(wave);
+    g_assert_cmpint(width, >, 0);
+    g_assert_cmpint(height, >, 0);
+    GdkPaintable *paintable = gtk_widget_paintable_new(wave);
+    GtkSnapshot *snapshot = gtk_snapshot_new();
+    gdk_paintable_snapshot(paintable, GDK_SNAPSHOT(snapshot), width, height);
+    GskRenderNode *node = gtk_snapshot_free_to_node(snapshot);
+    g_assert_nonnull(node);
+    cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
+    cairo_t *cr = cairo_create(surface);
+    gsk_render_node_draw(node, cr);
+    cairo_surface_flush(surface);
+    GBytes *pixels = g_bytes_new(cairo_image_surface_get_data(surface),
+                                 cairo_image_surface_get_stride(surface) * height);
+    cairo_destroy(cr);
+    cairo_surface_destroy(surface);
+    gsk_render_node_unref(node);
+    g_object_unref(paintable);
+    return pixels;
+}
+
+static void outgoing_wave_is_accented_and_flat_when_muted(gconstpointer ignored)
+{
+    (void)ignored;
+    Fixture f = {0};
+    mock_ui_init(&f.model);
+    f.popup = mock_call_popup_new(app, action, &f);
+    mock_ui_incoming(&f.model, 0);
+    mock_ui_answer(&f.model);
+    mock_call_popup_update(f.popup, &f.model);
+    GtkWindow *window = mock_call_popup_window(f.popup);
+    GtkWidget *wave = find(GTK_WIDGET(window), "voice-waveform");
+    g_assert_true(GTK_IS_DRAWING_AREA(wave));
+    GBytes *silent = wave_pixels(wave);
+    mock_call_popup_set_microphone_level(f.popup, 1.0);
+    GBytes *speaking = wave_pixels(wave);
+    g_assert_false(g_bytes_equal(silent, speaking));
+    GBytes *unchanged = wave_pixels(wave);
+    g_assert_true(g_bytes_equal(speaking, unchanged)); /* No decorative idle animation. */
+    g_bytes_unref(unchanged);
+    mock_call_popup_set_microphone_level(f.popup, -1);
+    GBytes *unavailable = wave_pixels(wave);
+    g_assert_true(g_bytes_equal(silent, unavailable));
+    g_bytes_unref(unavailable);
+    mock_call_popup_set_voice(f.popup, 1.0);
+    g_assert_cmpfloat(gtk_level_bar_get_value(GTK_LEVEL_BAR(find(GTK_WIDGET(window), "incoming-level"))), ==, 1.0);
+    mock_call_popup_set_microphone_level(f.popup, 1.0);
+
+    GtkCssProvider *accent = gtk_css_provider_new();
+    gtk_css_provider_load_from_string(accent, "@define-color accent_color #e95420;");
+    gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(accent),
+                                               GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+    GBytes *orange = wave_pixels(wave);
+    gsize length;
+    const guchar *pixels = g_bytes_get_data(orange, &length);
+    guint colored = 0;
+    for (gsize i = 0; i + 3 < length; i += 4)
+        if (pixels[i + 2] > pixels[i + 1] * 1.5 && pixels[i + 1] > pixels[i] * 1.5)
+            colored++;
+    g_assert_cmpuint(colored, >, 10);
+    gtk_css_provider_load_from_string(accent, "@define-color accent_color #20bbed;");
+    GBytes *blue = wave_pixels(wave);
+    g_assert_false(g_bytes_equal(orange, blue));
+    gtk_style_context_remove_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(accent));
+    g_object_unref(accent);
+
+    f.model.muted = true;
+    mock_call_popup_update(f.popup, &f.model);
+    GBytes *muted = wave_pixels(wave);
+    g_assert_true(g_bytes_equal(silent, muted));
+    mock_call_popup_set_microphone_level(f.popup, 1.0);
+    GBytes *still_muted = wave_pixels(wave);
+    g_assert_true(g_bytes_equal(muted, still_muted));
+    mock_call_popup_set_voice(f.popup, 1.0);
+    g_assert_cmpfloat(gtk_level_bar_get_value(GTK_LEVEL_BAR(find(GTK_WIDGET(window), "incoming-level"))), ==, 1.0);
+    click(&f, "compact");
+    g_assert_true(gtk_widget_is_visible(wave));
+    g_assert_true(gtk_widget_is_visible(find(GTK_WIDGET(window), "incoming-level")));
+    g_bytes_unref(silent);
+    g_bytes_unref(speaking);
+    g_bytes_unref(orange);
+    g_bytes_unref(blue);
+    g_bytes_unref(muted);
+    g_bytes_unref(still_muted);
     gtk_window_destroy(window);
 }
 
@@ -635,7 +728,8 @@ int main(int argc, char **argv)
     g_test_add_data_func("/popup/merge", NULL, merge_only_for_eligible_active_call);
     g_test_add_data_func("/popup/conference-end", NULL, conference_end_targets_all_calls);
     g_test_add_data_func("/popup/movable", NULL, movable_popup);
-    g_test_add_data_func("/popup/voice", NULL, voice_drives_waveform_and_speaking_glow);
+    g_test_add_data_func("/popup/voice", NULL, incoming_voice_fills_bar_and_speaking_glow);
+    g_test_add_data_func("/popup/outgoing-wave", NULL, outgoing_wave_is_accented_and_flat_when_muted);
     g_test_add_data_func("/popup/incoming-colors", NULL, incoming_colors);
     g_test_add_data_func("/popup/waiting-banner", NULL, waiting_banner);
     g_test_add_data_func("/popup/call-list", NULL, call_list_and_multi_call_actions);
