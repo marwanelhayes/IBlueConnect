@@ -2,6 +2,12 @@
 
 Date: 2026-09-24. Workspace: `/home/marwan-ahmed/Work/IBlueConnect`. Supersedes the older /tmp handoffs.
 
+## 2026-10-23 (late) Apple-inspired voice strip — UI installed
+
+User approved the pycairo mockup ("build it exactly as shown"). `src/mock-ui/call-popup.c` replaces the old outgoing line wave and the incoming `GtkLevelBar` with one strip: a pill (`.voice-strip`) holding `voice-waveform`, 22 capsule bars computed from the allocated width. Your voice (`outgoing_voice`, system accent via `@accent_color`, Ubuntu orange by default) enters from the left with exponential fade; the caller (`incoming_voice`, GNOME green `#2ec27e`) from the right; louder side colours each bar; quiet bars are grey dots. Levels decay ×0.7 per update and the bar pattern advances only with new levels (no idle animation). "You" (dims with `.muted`) and the caller name label sit under the strip; compact mode keeps the strip (20 px) and hides the labels. The avatar is wrapped in `caller-ring` (`AdwBin`, `.avatar-ring`), whose background becomes the speaker's colour — `AdwAvatar` clipped both `box-shadow` and `outline`, so the old "speaking" glow had never rendered visibly despite passing a class-only test. Identity-label colouring was dropped to match the mockup.
+
+Tests (failed first): `/popup/voice` (green only, right half >3× left, ring pixels green, no idle animation, decay, live audio loss clears), `/popup/outgoing-wave` (accent only, left half >3× right, ring pixels orange, follows accent change, both voices meet, flat when unavailable/muted, "You" dims, compact hides labels); `test-app` checks `speaking-them` on the ring. 44 UI tests pass on 26.04 and 24.04. Real-widget renders of the four states (light/dark) match the mockup's strip, colours, labels and ring; the surrounding controller keeps its existing header (name, "via iPhone", number, timer, Open app) and icon buttons, unlike the mockup's illustrative text buttons. UI installed to `~/.local/bin/iblueconnect`, self-test OK, no daemon restart. Live call appearance pending.
+
 ## 2026-10-23 (night) faster lists, Recents paging, prominent Siri, compact incoming popup — UI installed
 
 User choices: performance options 1, 2 and 5 (Recents limited to 50 with Show more); keep option 3 documented for later; make Siri more apparent on its own; separators 90% wide; remove the empty band under the incoming buttons.

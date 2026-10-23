@@ -250,8 +250,8 @@ static void two_meters_follow_streams_and_mute(AppFixture *fixture, gconstpointe
     g_bytes_unref(muted);
     g_bytes_unref(pending);
     on_voice(1, app);
-    GtkWidget *bar = app_test_find(GTK_WIDGET(mock_call_popup_window(app->popup)), "incoming-level");
-    g_assert_cmpfloat(gtk_level_bar_get_value(GTK_LEVEL_BAR(bar)), ==, 1);
+    GtkWidget *avatar = app_test_find(GTK_WIDGET(mock_call_popup_window(app->popup)), "caller-ring");
+    g_assert_true(gtk_widget_has_css_class(avatar, "speaking-them"));
 }
 
 static void stale_audio_does_not_restart_after_lock(AppFixture *fixture, gconstpointer ignored)

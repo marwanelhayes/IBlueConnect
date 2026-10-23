@@ -1,4 +1,5 @@
 #include "call-popup.h"
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -9,8 +10,8 @@
 #endif
 
 struct MockCallPopup {
-    GtkWidget *window, *avatar, *audio_content, *end_content, *identity, *number, *subtitle, *timer, *incoming_level;
-    GtkWidget *waveform, *levels;
+    GtkWidget *window, *avatar, *avatar_ring, *audio_content, *end_content, *identity, *number, *subtitle, *timer;
+    GtkWidget *waveform, *levels, *wave_labels, *wave_you, *wave_caller;
     GtkWidget *incoming, *outgoing, *active, *call_management, *hold_button, *resume_button, *merge_button, *terminal, *details;
     GtkWidget *compact_button, *expand_button, *mute_button, *keypad_button, *keypad, *tone_feedback, *open_app_button, *end_button;
     GtkWidget *audio_button, *audio_popover, *audio_choices, *audio_empty;
@@ -23,8 +24,8 @@ struct MockCallPopup {
     MockCall phase;
     gboolean held;
     gboolean keypad_open;
-    double incoming_voice;
-    double microphone[33]; /* Measured envelope, newest last; no animation without new levels. */
+    double incoming_voice, outgoing_voice; /* Decaying levels 0..1. */
+    guint wave_step; /* Advances only with new levels, so a silent call never animates. */
     gboolean microphone_enabled;
 #ifdef GDK_WINDOWING_X11
     guint placement_tick;
@@ -280,58 +281,74 @@ static gboolean place_after_resize(gpointer data)
 #endif
 
 #define SPEAKING_LEVEL 0.3
+#define WAVE_BARS 22
+/* GNOME palette green for the other person; your side follows the system (Ubuntu) accent. */
+static const GdkRGBA wave_green = { 0.180, 0.761, 0.494, 1.0 };
+static const GdkRGBA wave_idle = { 0.6, 0.6, 0.62, 1.0 };
 
+/* The avatar ring takes the colour of whoever is speaking louder. */
 static void show_voice(MockCallPopup *popup)
 {
-    gtk_level_bar_set_value(GTK_LEVEL_BAR(popup->incoming_level), popup->incoming_voice);
-    gboolean speaking = popup->incoming_voice >= SPEAKING_LEVEL;
-    if (speaking) {
-        gtk_widget_add_css_class(popup->avatar, "speaking");
-        gtk_widget_add_css_class(popup->identity, "speaking");
-    } else {
-        gtk_widget_remove_css_class(popup->avatar, "speaking");
-        gtk_widget_remove_css_class(popup->identity, "speaking");
-    }
+    gboolean me = popup->outgoing_voice >= SPEAKING_LEVEL && popup->outgoing_voice >= popup->incoming_voice;
+    gboolean them = popup->incoming_voice >= SPEAKING_LEVEL && !me;
+    if (me) gtk_widget_add_css_class(popup->avatar_ring, "speaking-me");
+    else gtk_widget_remove_css_class(popup->avatar_ring, "speaking-me");
+    if (them) gtk_widget_add_css_class(popup->avatar_ring, "speaking-them");
+    else gtk_widget_remove_css_class(popup->avatar_ring, "speaking-them");
+    gtk_widget_queue_draw(popup->waveform);
 }
 
 void mock_call_popup_set_voice(MockCallPopup *popup, double level)
 {
     popup->incoming_voice = MAX(CLAMP(level, 0.0, 1.0), popup->incoming_voice * 0.7);
+    if (popup->incoming_voice < 0.02) popup->incoming_voice = 0;
+    popup->wave_step++;
     show_voice(popup);
 }
 
-static void draw_microphone(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer data)
+static void rounded_bar(cairo_t *cr, double x, double y, double w, double h)
+{
+    double r = w / 2;
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, x + r, y + r, r, G_PI, 1.5 * G_PI);
+    cairo_arc(cr, x + r, y + r, r, 1.5 * G_PI, 2 * G_PI);
+    cairo_arc(cr, x + r, y + h - r, r, 0, G_PI / 2);
+    cairo_arc(cr, x + r, y + h - r, r, G_PI / 2, G_PI);
+    cairo_close_path(cr);
+}
+
+/* Capsule bars: your voice enters from the left, theirs from the right, fading toward the middle. */
+static void draw_wave(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer data)
 {
     MockCallPopup *popup = data;
-    GdkRGBA color;
-    gtk_style_context_get_color(gtk_widget_get_style_context(GTK_WIDGET(area)), &color);
-    gdk_cairo_set_source_rgba(cr, &color);
-    cairo_set_line_width(cr, 2.0);
-    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-    double step = (width - 4.0) / (G_N_ELEMENTS(popup->microphone) - 1);
-    double center = height / 2.0, amplitude = (height - 6.0) / 2.0;
-    cairo_move_to(cr, 2, center);
-    for (guint i = 1; i < G_N_ELEMENTS(popup->microphone); i++) {
-        double x = 2 + (i - 1) * step;
-        double previous = center + (i % 2 ? 1 : -1) * popup->microphone[i - 1] * amplitude;
-        double next = center + (i % 2 ? -1 : 1) * popup->microphone[i] * amplitude;
-        cairo_curve_to(cr, x + step / 2, previous, x + step / 2, next, x + step, next);
+    GdkRGBA accent;
+    gtk_widget_get_color(GTK_WIDGET(area), &accent);
+    double gap = (double)width / WAVE_BARS, bar = gap * 0.55, middle = height / 2.0;
+    for (int i = 0; i < WAVE_BARS; i++) {
+        double t = (double)i / (WAVE_BARS - 1), phase = popup->wave_step * 0.6;
+        double me = popup->outgoing_voice * exp(-3.2 * t) * (0.55 + 0.45 * fabs(sin(i * 1.7 + phase)));
+        double them = popup->incoming_voice * exp(-3.2 * (1 - t)) * (0.55 + 0.45 * fabs(sin(i * 2.3 + phase * 1.3)));
+        double level = MAX(me, them);
+        const GdkRGBA *color = me >= them ? &accent : &wave_green;
+        if (level < 0.06) { color = &wave_idle; level = 0.06; }
+        double h = MAX(bar, level * height);
+        gdk_cairo_set_source_rgba(cr, color);
+        rounded_bar(cr, i * gap + (gap - bar) / 2, middle - h / 2, bar, h);
+        cairo_fill(cr);
     }
-    cairo_stroke(cr);
 }
 
 void mock_call_popup_set_microphone_level(MockCallPopup *popup, double level)
 {
-    if (level < 0) {
-        memset(popup->microphone, 0, sizeof popup->microphone);
-        gtk_widget_queue_draw(popup->waveform);
+    if (level < 0 || !popup->microphone_enabled) {
+        if (level < 0) popup->outgoing_voice = 0;
+        show_voice(popup);
         return;
     }
-    if (!popup->microphone_enabled) return;
-    guint last = G_N_ELEMENTS(popup->microphone) - 1;
-    memmove(popup->microphone, popup->microphone + 1, last * sizeof popup->microphone[0]);
-    popup->microphone[last] = CLAMP(level, 0.0, 1.0);
-    gtk_widget_queue_draw(popup->waveform);
+    popup->outgoing_voice = MAX(CLAMP(level, 0.0, 1.0), popup->outgoing_voice * 0.7);
+    if (popup->outgoing_voice < 0.02) popup->outgoing_voice = 0;
+    popup->wave_step++;
+    show_voice(popup);
 }
 
 static const char *line_caller(const MockLine *line)
@@ -435,12 +452,16 @@ static void install_css(void)
     if (installed) return;
     installed = TRUE;
     GtkCssProvider *css = gtk_css_provider_new();
-    /* The GNOME accent colour lights the caller while they speak. */
+    /* Your voice uses the system accent, the caller's voice green, as on the iPhone. */
     gtk_css_provider_load_from_string(css,
-        "avatar.speaking { box-shadow: 0 0 0 3px @accent_bg_color; }"
-        "label.speaking { color: @accent_color; }"
+        ".avatar-ring { padding: 3px; border-radius: 999px; }"
+        ".avatar-ring.speaking-me { background-color: @accent_color; }"
+        ".avatar-ring.speaking-them { background-color: #2ec27e; }"
         "#voice-waveform { color: @accent_color; }"
-        "#incoming-level block.filled { background-color: @accent_bg_color; }"
+        ".voice-strip { background-color: alpha(@window_fg_color, 0.07); border-radius: 999px; padding: 4px 14px; }"
+        "label.wave-you { color: @accent_color; font-weight: bold; font-size: 0.8em; }"
+        "label.wave-you.muted { color: alpha(@window_fg_color, 0.5); }"
+        "label.wave-caller { color: #2ec27e; font-weight: bold; font-size: 0.8em; }"
         "button.call-answer { background-color: #187833; background-image: none; color: #fff; }"
         "button.call-answer:hover { background-color: #1b803a; }"
         "button.call-answer:active { background-color: #14652b; }"
@@ -486,7 +507,13 @@ MockCallPopup *mock_call_popup_new(GtkApplication *app, MockCallPopupAction acti
     GtkWidget *top = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
     popup->avatar = adw_avatar_new(40, NULL, TRUE);
     gtk_widget_set_name(popup->avatar, "caller-avatar");
-    gtk_box_append(GTK_BOX(top), popup->avatar);
+    /* The avatar clips anything drawn outside its circle, so the speaking ring is a padded round backdrop. */
+    popup->avatar_ring = adw_bin_new();
+    gtk_widget_set_name(popup->avatar_ring, "caller-ring");
+    gtk_widget_add_css_class(popup->avatar_ring, "avatar-ring");
+    gtk_widget_set_valign(popup->avatar_ring, GTK_ALIGN_CENTER);
+    adw_bin_set_child(ADW_BIN(popup->avatar_ring), popup->avatar);
+    gtk_box_append(GTK_BOX(top), popup->avatar_ring);
     GtkWidget *identity_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     gtk_widget_set_hexpand(identity_box, TRUE);
     popup->identity = label("", "heading");
@@ -507,26 +534,29 @@ MockCallPopup *mock_call_popup_new(GtkApplication *app, MockCallPopupAction acti
     gtk_widget_set_name(popup->number, "caller-number");
     gtk_box_append(GTK_BOX(body), popup->number);
     popup->levels = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-    gtk_box_append(GTK_BOX(popup->levels), label("Your voice", "dim-label"));
+    GtkWidget *strip = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(strip, "voice-strip");
     popup->waveform = gtk_drawing_area_new();
     gtk_widget_set_name(popup->waveform, "voice-waveform");
-    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(popup->waveform), 34);
-    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(popup->waveform), draw_microphone, popup, NULL);
+    gtk_widget_set_hexpand(popup->waveform, TRUE);
+    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(popup->waveform), 56);
+    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(popup->waveform), draw_wave, popup, NULL);
     gtk_accessible_update_property(GTK_ACCESSIBLE(popup->waveform), GTK_ACCESSIBLE_PROPERTY_LABEL,
-                                   "Your outgoing voice", -1);
-    gtk_widget_set_tooltip_text(popup->waveform, "Audio on the outgoing call path; reception is not confirmed");
-    gtk_box_append(GTK_BOX(popup->levels), popup->waveform);
-    GtkWidget *receiving = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    gtk_widget_set_halign(receiving, GTK_ALIGN_CENTER);
-    gtk_box_append(GTK_BOX(receiving), label("Incoming audio", "dim-label"));
-    popup->incoming_level = gtk_level_bar_new_for_interval(0.0, 1.0);
-    gtk_widget_set_name(popup->incoming_level, "incoming-level");
-    gtk_widget_set_size_request(popup->incoming_level, 84, -1);
-    gtk_widget_set_valign(popup->incoming_level, GTK_ALIGN_CENTER);
-    gtk_accessible_update_property(GTK_ACCESSIBLE(popup->incoming_level), GTK_ACCESSIBLE_PROPERTY_LABEL,
-                                   "Incoming audio level", -1);
-    gtk_box_append(GTK_BOX(receiving), popup->incoming_level);
-    gtk_box_append(GTK_BOX(popup->levels), receiving);
+                                   "Voice activity: your voice from the left, the caller's from the right", -1);
+    gtk_widget_set_tooltip_text(popup->waveform, "Audio on the call path; reception is not confirmed");
+    gtk_box_append(GTK_BOX(strip), popup->waveform);
+    gtk_box_append(GTK_BOX(popup->levels), strip);
+    popup->wave_labels = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    popup->wave_you = label("You", "wave-you");
+    gtk_widget_set_name(popup->wave_you, "wave-you");
+    gtk_widget_set_hexpand(popup->wave_you, TRUE);
+    gtk_box_append(GTK_BOX(popup->wave_labels), popup->wave_you);
+    popup->wave_caller = label("", "wave-caller");
+    gtk_widget_set_name(popup->wave_caller, "wave-caller");
+    gtk_label_set_xalign(GTK_LABEL(popup->wave_caller), 1);
+    gtk_label_set_ellipsize(GTK_LABEL(popup->wave_caller), PANGO_ELLIPSIZE_END);
+    gtk_box_append(GTK_BOX(popup->wave_labels), popup->wave_caller);
+    gtk_box_append(GTK_BOX(popup->levels), popup->wave_labels);
     gtk_box_append(GTK_BOX(body), popup->levels);
     popup->details = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     popup->keypad = make_keypad(popup);
@@ -641,10 +671,13 @@ void mock_call_popup_update(MockCallPopup *popup, const MockUiModel *model)
     popup->microphone_enabled = active && !model->muted && !model->call_held &&
                                 (!model->live || model->call_audio);
     if (!popup->microphone_enabled) {
-        memset(popup->microphone, 0, sizeof popup->microphone);
-        gtk_widget_queue_draw(popup->waveform);
+        popup->outgoing_voice = 0;
+        show_voice(popup);
     }
-    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(popup->waveform), model->compact ? 20 : 34);
+    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(popup->waveform), model->compact ? 20 : 56);
+    gtk_widget_set_visible(popup->wave_labels, !model->compact);
+    if (model->muted) gtk_widget_add_css_class(popup->wave_you, "muted");
+    else gtk_widget_remove_css_class(popup->wave_you, "muted");
     gtk_widget_set_visible(popup->levels, active);
     gboolean terminal = model->call == MOCK_CALL_DECLINED || model->call == MOCK_CALL_ENDING ||
                         model->call == MOCK_CALL_ENDED;
@@ -703,6 +736,7 @@ void mock_call_popup_update(MockCallPopup *popup, const MockUiModel *model)
     gtk_label_set_text(GTK_LABEL(popup->identity), contact ? contact->name :
                        model->live && model->caller_name[0] ? model->caller_name :
                        model->dialed_number[0] ? model->dialed_number : "Unknown caller");
+    gtk_label_set_text(GTK_LABEL(popup->wave_caller), gtk_label_get_text(GTK_LABEL(popup->identity)));
     gtk_label_set_text(GTK_LABEL(popup->number), model->live ? model->dialed_number :
                        contact ? contact->numbers[0] : incoming ? "Unknown caller" : "");
     if (active && model->call_held)
