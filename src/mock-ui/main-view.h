@@ -14,7 +14,7 @@ typedef enum {
     MOCK_MAIN_FORGET,
     MOCK_MAIN_RESUME,
     MOCK_MAIN_SIRI,
-    MOCK_MAIN_APPEARANCE /* value is "system", "light" or "dark". */
+    MOCK_MAIN_APPEARANCE /* value is "system", "light", "dark" or "black". */
 } MockMainAction;
 
 /* value is the dialed number for MOCK_MAIN_CALL with contact_index == -1. */

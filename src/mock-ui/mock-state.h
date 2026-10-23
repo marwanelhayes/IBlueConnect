@@ -8,7 +8,8 @@
 typedef enum {
     MOCK_APPEARANCE_SYSTEM,
     MOCK_APPEARANCE_LIGHT,
-    MOCK_APPEARANCE_DARK
+    MOCK_APPEARANCE_DARK,
+    MOCK_APPEARANCE_BLACK /* GNOME Dark with near-black surfaces. */
 } MockAppearance;
 
 typedef enum {

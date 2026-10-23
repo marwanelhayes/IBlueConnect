@@ -359,6 +359,53 @@ static void safe_exit_failure_preserves_app(AppFixture *fixture, gconstpointer i
     app_test_settle();
 }
 
+/* Brightness of the controller's own background, sampled in the body margin beside the content. */
+static int controller_background(MockApp *app)
+{
+    GtkWidget *window = GTK_WIDGET(mock_call_popup_window(app->popup));
+    gtk_window_present(GTK_WINDOW(window));
+    app_test_settle();
+    GtkWidget *handle = gtk_widget_get_ancestor(app_test_find(window, "caller-ring"), GTK_TYPE_WINDOW_HANDLE);
+    g_assert_nonnull(handle);
+    graphene_rect_t box;
+    g_assert_true(gtk_widget_compute_bounds(handle, window, &box));
+    int width = gtk_widget_get_width(window), height = gtk_widget_get_height(window);
+    GdkPaintable *paintable = gtk_widget_paintable_new(window);
+    GtkSnapshot *snapshot = gtk_snapshot_new();
+    gdk_paintable_snapshot(paintable, GDK_SNAPSHOT(snapshot), width, height);
+    GskRenderNode *node = gtk_snapshot_free_to_node(snapshot);
+    cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
+    cairo_t *cr = cairo_create(surface);
+    gsk_render_node_draw(node, cr);
+    cairo_surface_flush(surface);
+    int x = (int)box.origin.x + 5, y = (int)(box.origin.y + box.size.height / 2);
+    const guchar *px = cairo_image_surface_get_data(surface) + y * cairo_image_surface_get_stride(surface) + x * 4;
+    int brightness = MAX(px[0], MAX(px[1], px[2]));
+    cairo_destroy(cr);
+    cairo_surface_destroy(surface);
+    gsk_render_node_unref(node);
+    g_object_unref(paintable);
+    return brightness;
+}
+
+/* Black builds on GNOME Dark with near-black surfaces, for the controller as much as the main window. */
+static void black_is_darker_than_dark(AppFixture *fixture, gconstpointer ignored)
+{
+    (void)ignored;
+    MockApp *app = &fixture->app;
+    main_action(MOCK_MAIN_APPEARANCE, -1, "dark", app);
+    int dark = controller_background(app);
+    main_action(MOCK_MAIN_APPEARANCE, -1, "black", app);
+    g_assert_cmpint(adw_style_manager_get_color_scheme(adw_style_manager_get_default()), ==, ADW_COLOR_SCHEME_FORCE_DARK);
+    int black = controller_background(app);
+    g_assert_cmpint(appearance_load(), ==, MOCK_APPEARANCE_BLACK);
+    g_assert_cmpint(dark, >, 20);
+    g_assert_cmpint(black, <, 16);
+    main_action(MOCK_MAIN_APPEARANCE, -1, "dark", app);
+    g_assert_cmpint(controller_background(app), ==, dark); /* Leaving Black restores GNOME Dark exactly. */
+    main_action(MOCK_MAIN_APPEARANCE, -1, "system", app);
+}
+
 /* The choice is saved and applied to every window of the single app instance, controller included. */
 static void appearance_is_saved_and_applied(AppFixture *fixture, gconstpointer ignored)
 {
@@ -406,6 +453,7 @@ int main(int argc, char **argv)
     g_test_add("/app/stale-snapshot", AppFixture, NULL, app_test_setup, stale_snapshot_does_not_replace_new_state, app_test_teardown);
     g_test_add("/app/safe-exit", AppFixture, NULL, app_test_setup, safe_exit_failure_preserves_app, app_test_teardown);
     g_test_add("/app/appearance", AppFixture, NULL, app_test_setup, appearance_is_saved_and_applied, app_test_teardown);
+    g_test_add("/app/appearance-black", AppFixture, NULL, app_test_setup, black_is_darker_than_dark, app_test_teardown);
     int result = g_test_run();
     g_unlink(program);
     g_unlink(tap_log);

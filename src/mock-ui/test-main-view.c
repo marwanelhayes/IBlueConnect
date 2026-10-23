@@ -485,6 +485,8 @@ static void appearance_choice(void)
     GtkWidget *system = find_named(window, "appearance-system");
     GtkWidget *light = find_named(window, "appearance-light");
     GtkWidget *dark = find_named(window, "appearance-dark");
+    GtkWidget *black = find_named(window, "appearance-black");
+    g_assert_nonnull(black);
     g_assert_nonnull(system);
     g_assert_nonnull(light);
     g_assert_nonnull(dark);
@@ -498,6 +500,11 @@ static void appearance_choice(void)
     g_assert_cmpint(event.count, ==, 1);
     g_assert_cmpint(event.action, ==, MOCK_MAIN_APPEARANCE);
     g_assert_cmpstr(event.value, ==, "dark");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(black), TRUE);
+    g_assert_cmpstr(event.value, ==, "black");
+    model.appearance = MOCK_APPEARANCE_BLACK;
+    mock_main_window_update(window);
+    g_assert_true(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(black)));
     gtk_window_destroy(GTK_WINDOW(window));
     g_free(event.value);
     g_object_unref(app);

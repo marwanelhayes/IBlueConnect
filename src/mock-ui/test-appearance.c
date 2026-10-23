@@ -22,6 +22,10 @@ static void appearance_round_trips_and_fails_safe(void)
     g_assert_true(g_file_set_contents(path, "[ui]\nappearance=purple\n", -1, NULL));
     g_assert_cmpint(appearance_load(), ==, MOCK_APPEARANCE_SYSTEM);
     g_assert_cmpint(appearance_parse("dark"), ==, MOCK_APPEARANCE_DARK);
+    g_assert_cmpint(appearance_parse("black"), ==, MOCK_APPEARANCE_BLACK);
+    g_assert_cmpstr(appearance_name(MOCK_APPEARANCE_BLACK), ==, "black");
+    g_assert_true(appearance_save(MOCK_APPEARANCE_BLACK, NULL));
+    g_assert_cmpint(appearance_load(), ==, MOCK_APPEARANCE_BLACK);
     g_assert_cmpstr(appearance_name(MOCK_APPEARANCE_LIGHT), ==, "light");
     g_unlink(path);
     g_rmdir(dir);

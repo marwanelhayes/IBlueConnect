@@ -12,7 +12,7 @@ typedef struct {
     GtkWidget *split, *sync_error, *calls_error, *connection_card, *link_status;
     int selected_contact;
     size_t recents_limit;
-    GtkWidget *appearance[3]; /* System, Light, Dark toggles. */
+    GtkWidget *appearance[4]; /* System, Light, Dark, Black toggles (MockAppearance order). */
     gboolean syncing_appearance;
     char lists_key[1024]; /* ponytail: queries past ~1000 chars may skip a rebuild; fine for a search box. */
 } MainView;
@@ -757,16 +757,16 @@ static void appearance_toggled(GtkToggleButton *button, gpointer user_data)
     emit(self, MOCK_MAIN_APPEARANCE, -1, g_object_get_data(G_OBJECT(button), "appearance"));
 }
 
-/* System / Light / Dark as one linked row of toggles (AdwToggleGroup needs libadwaita 1.7; 24.04 has 1.5). */
+/* System / Light / Dark / Black as one linked row of toggles (AdwToggleGroup needs libadwaita 1.7; 24.04 has 1.5). */
 static GtkWidget *appearance_row(MainView *self)
 {
-    static const char *const labels[] = { "System", "Light", "Dark" };
-    static const char *const values[] = { "system", "light", "dark" };
+    static const char *const labels[] = { "System", "Light", "Dark", "Black" };
+    static const char *const values[] = { "system", "light", "dark", "black" };
     GtkWidget *row = hbox(0);
     gtk_widget_add_css_class(row, "linked");
     gtk_widget_set_halign(row, GTK_ALIGN_FILL);
     gtk_box_set_homogeneous(GTK_BOX(row), TRUE);
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
         GtkWidget *toggle = gtk_toggle_button_new_with_label(labels[i]);
         char *name = g_strdup_printf("appearance-%s", values[i]);
         gtk_widget_set_name(toggle, name);
