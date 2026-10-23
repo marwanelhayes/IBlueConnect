@@ -24,6 +24,23 @@ static GtkWidget *find_button(GtkWidget *root, const char *text)
     return NULL;
 }
 
+static GtkWidget *find_named(GtkWidget *root, const char *name)
+{
+    if (g_strcmp0(gtk_widget_get_name(root), name) == 0) return root;
+    for (GtkWidget *child = gtk_widget_get_first_child(root); child; child = gtk_widget_get_next_sibling(child)) {
+        GtkWidget *found = find_named(child, name);
+        if (found) return found;
+    }
+    return NULL;
+}
+
+static void collect_class(GtkWidget *root, const char *css, GPtrArray *found)
+{
+    if (gtk_widget_has_css_class(root, css)) g_ptr_array_add(found, root);
+    for (GtkWidget *child = gtk_widget_get_first_child(root); child; child = gtk_widget_get_next_sibling(child))
+        collect_class(child, css, found);
+}
+
 static GtkWidget *find_search(GtkWidget *root, const char *placeholder)
 {
     if (GTK_IS_SEARCH_ENTRY(root) && g_strcmp0(
@@ -119,16 +136,10 @@ static void connected_home(void)
     g_free(missed_text);
     g_assert_nonnull(missed);
     g_assert_true(gtk_widget_has_css_class(missed, "error"));
-    for (GtkWidget *w = missed; w; w = gtk_widget_get_parent(w)) {
-        if (gtk_widget_get_first_child(w) && ADW_IS_AVATAR(gtk_widget_get_first_child(w))) {
-            GtkWidget *call = find_button(w, "Call");
-            g_assert_nonnull(call);
-            for (GtkWidget *a = call; a != w; a = gtk_widget_get_parent(a))
-                g_assert_false(gtk_widget_has_css_class(a, "error"));
-            g_assert_false(gtk_widget_has_css_class(w, "error"));
-            break;
-        }
-    }
+    GtkWidget *missed_row = gtk_widget_get_ancestor(missed, GTK_TYPE_BUTTON);
+    g_assert_nonnull(missed_row);
+    g_assert_true(gtk_widget_has_css_class(missed_row, "recent-row"));
+    g_assert_false(gtk_widget_has_css_class(missed_row, "error"));
     gtk_window_destroy(GTK_WINDOW(window));
     g_object_unref(app);
 }
@@ -164,11 +175,12 @@ static void connection_states(void)
     g_assert_nonnull(find_label(window, "Contacts · Update failed"));
     GtkWidget *pages = find_pages(window);
     GtkWidget *recents = adw_view_stack_get_visible_child(ADW_VIEW_STACK(pages));
-    GtkWidget *call = find_button(recents, "Call");
-    g_assert_nonnull(call);
-    g_assert_false(gtk_widget_is_sensitive(call));
-    g_signal_emit_by_name(call, "clicked");
-    g_assert_cmpint(event.count, ==, 1);
+    GPtrArray *rows = g_ptr_array_new();
+    collect_class(recents, "recent-row", rows);
+    g_assert_cmpuint(rows->len, >, 0);
+    g_signal_emit_by_name(rows->pdata[0], "clicked");
+    g_assert_cmpint(event.count, ==, 1); /* Calling back is refused while calls are unavailable. */
+    g_ptr_array_unref(rows);
     adw_view_stack_set_visible_child_name(ADW_VIEW_STACK(pages), "dial");
     GtkWidget *dial = adw_view_stack_get_visible_child(ADW_VIEW_STACK(pages));
     gtk_editable_set_text(GTK_EDITABLE(find_dial_entry(dial)), "0101234");
@@ -268,9 +280,13 @@ static void siri_button_starts_siri_only_when_idle(void)
     g_application_register(G_APPLICATION(app), NULL, NULL);
     GtkWidget *window = mock_main_window_new(app, &model, on_action, &event);
     GtkWidget *pages = find_pages(window);
-    adw_view_stack_set_visible_child_name(ADW_VIEW_STACK(pages), "dial");
-    GtkWidget *siri = find_button(adw_view_stack_get_visible_child(ADW_VIEW_STACK(pages)), "Siri");
+    g_assert_null(find_named(pages, "siri-button")); /* Its own button, not part of the keypad. */
+    GtkWidget *siri = find_named(window, "siri-button");
     g_assert_nonnull(siri);
+    GtkWidget *overlay = gtk_widget_get_ancestor(siri, GTK_TYPE_OVERLAY);
+    g_assert_nonnull(overlay);
+    g_assert_true(gtk_widget_has_css_class(gtk_overlay_get_child(GTK_OVERLAY(overlay)), "connection-card"));
+    g_assert_true(gtk_widget_has_css_class(siri, "suggested-action"));
     g_assert_true(gtk_widget_is_sensitive(siri));
     g_signal_emit_by_name(siri, "clicked");
     g_assert_cmpint(event.count, ==, 1);
@@ -539,50 +555,65 @@ static void title_is_centered(void)
     g_object_unref(app);
 }
 
-static void collect_row_calls(GtkWidget *root, GPtrArray *calls)
+static guint8 pixel_alpha(cairo_surface_t *surface, int x, int y)
 {
-    if (GTK_IS_BUTTON(root) && g_strcmp0(gtk_button_get_label(GTK_BUTTON(root)), "Call") == 0 &&
-        ADW_IS_AVATAR(gtk_widget_get_first_child(gtk_widget_get_parent(root))))
-        g_ptr_array_add(calls, root);
-    for (GtkWidget *child = gtk_widget_get_first_child(root); child; child = gtk_widget_get_next_sibling(child))
-        collect_row_calls(child, calls);
+    return cairo_image_surface_get_data(surface)[y * cairo_image_surface_get_stride(surface) + x * 4 + 3];
 }
 
-/* The date sits under the name, and every Call button lines up just after the widest text column. */
-static void recent_call_buttons_align_beside_names(void)
+/* iPhone-style Recents: the whole row calls back, no Call button, centred 80% separators between rows. */
+static void recent_rows_call_back_and_have_centred_separators(void)
 {
     MockUiModel model;
     mock_ui_init(&model);
+    Event event = {0};
     GtkApplication *app = gtk_application_new("org.iblueconnect.MockRecentRowsTest", 0);
     g_application_register(G_APPLICATION(app), NULL, NULL);
-    GtkWidget *window = mock_main_window_new(app, &model, NULL, NULL);
-    gtk_window_set_default_size(GTK_WINDOW(window), 900, 640);
+    GtkWidget *window = mock_main_window_new(app, &model, on_action, &event);
     gtk_window_present(GTK_WINDOW(window));
     GtkWidget *pages = find_pages(window);
     adw_view_stack_set_visible_child_name(ADW_VIEW_STACK(pages), "recents");
     for (int i = 0; i < 20; i++) while (g_main_context_iteration(NULL, FALSE));
     GtkWidget *recents = adw_view_stack_get_visible_child(ADW_VIEW_STACK(pages));
-    GPtrArray *calls = g_ptr_array_new();
-    collect_row_calls(recents, calls);
-    g_assert_cmpuint(calls->len, >=, 3);
-    float first_x = -1, widest_name_end = 0;
-    for (guint i = 0; i < calls->len; i++) {
-        GtkWidget *call = calls->pdata[i];
-        g_assert_null(gtk_widget_get_next_sibling(call));
-        graphene_rect_t box;
-        g_assert_true(gtk_widget_compute_bounds(call, recents, &box));
-        if (first_x < 0) first_x = box.origin.x;
-        g_assert_cmpfloat_with_epsilon(box.origin.x, first_x, 0.5);
-        GtkWidget *text = gtk_widget_get_prev_sibling(call);
-        graphene_rect_t name;
-        g_assert_true(gtk_widget_compute_bounds(text, recents, &name));
-        int natural = 0;
-        gtk_widget_measure(text, GTK_ORIENTATION_HORIZONTAL, -1, NULL, &natural, NULL, NULL);
-        widest_name_end = MAX(widest_name_end, name.origin.x + natural);
+    GPtrArray *rows = g_ptr_array_new(), *lines = g_ptr_array_new();
+    collect_class(recents, "recent-row", rows);
+    collect_class(recents, "recent-separator", lines);
+    g_assert_cmpuint(rows->len, ==, mock_recents_count);
+    g_assert_cmpuint(lines->len, ==, rows->len - 1);
+    for (guint i = 0; i < rows->len; i++) {
+        g_assert_true(GTK_IS_BUTTON(rows->pdata[i]));
+        g_assert_null(find_button(rows->pdata[i], "Call"));
     }
-    g_assert_cmpfloat(first_x - widest_name_end, <=, 40);
-    g_ptr_array_unref(calls);
+    g_signal_emit_by_name(rows->pdata[0], "clicked");
+    g_assert_cmpint(event.count, ==, 1);
+    g_assert_cmpint(event.action, ==, MOCK_MAIN_CALL);
+    g_assert_cmpstr(event.value, ==, mock_recents[0].number);
+    GtkWidget *line = lines->pdata[0];
+    int width = gtk_widget_get_width(line), height = gtk_widget_get_height(line);
+    g_assert_cmpint(width, >, 100);
+    g_assert_cmpint(height, >=, 1);
+    GdkPaintable *paintable = gtk_widget_paintable_new(line);
+    GtkSnapshot *snapshot = gtk_snapshot_new();
+    gdk_paintable_snapshot(paintable, GDK_SNAPSHOT(snapshot), width, height);
+    GskRenderNode *node = gtk_snapshot_free_to_node(snapshot);
+    g_assert_nonnull(node);
+    cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
+    cairo_t *cr = cairo_create(surface);
+    gsk_render_node_draw(node, cr);
+    cairo_surface_flush(surface);
+    int y = height / 2;
+    g_assert_cmpint(pixel_alpha(surface, width * 5 / 100, y), ==, 0);
+    g_assert_cmpint(pixel_alpha(surface, width * 12 / 100, y), >, 0);
+    g_assert_cmpint(pixel_alpha(surface, width / 2, y), >, 0);
+    g_assert_cmpint(pixel_alpha(surface, width * 88 / 100, y), >, 0);
+    g_assert_cmpint(pixel_alpha(surface, width * 95 / 100, y), ==, 0);
+    cairo_destroy(cr);
+    cairo_surface_destroy(surface);
+    gsk_render_node_unref(node);
+    g_object_unref(paintable);
+    g_ptr_array_unref(rows);
+    g_ptr_array_unref(lines);
     gtk_window_destroy(GTK_WINDOW(window));
+    g_free(event.value);
     g_object_unref(app);
 }
 
@@ -739,7 +770,7 @@ int main(int argc, char **argv)
     g_test_add_func("/main/preferences", preferences);
     g_test_add_func("/main/keyboard-shortcuts", keyboard_shortcuts);
     g_test_add_func("/main/proportions", comfortable_proportions);
-    g_test_add_func("/main/recent-rows", recent_call_buttons_align_beside_names);
+    g_test_add_func("/main/recent-rows", recent_rows_call_back_and_have_centred_separators);
     g_test_add_func("/main/title-centered", title_is_centered);
     g_test_add_func("/main/live-mode", live_mode_hides_mock_controls);
     g_test_add_func("/main/safe-exit", live_exit_controls_dispatch_guarded_actions);

@@ -320,6 +320,55 @@ static gboolean looks_like_number(const char *text)
     return digit;
 }
 
+/* A thin line across the middle 80% of the list, like the iPhone's Recents. */
+static void draw_separator(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer data)
+{
+    (void)data;
+    GdkRGBA color;
+    gtk_widget_get_color(GTK_WIDGET(area), &color);
+    gdk_cairo_set_source_rgba(cr, &color);
+    cairo_rectangle(cr, width * 0.1, (height - 1) / 2, width * 0.8, 1);
+    cairo_fill(cr);
+}
+
+static GtkWidget *recent_separator(void)
+{
+    GtkWidget *line = gtk_drawing_area_new();
+    gtk_widget_add_css_class(line, "recent-separator");
+    gtk_widget_set_hexpand(line, TRUE);
+    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(line), 1);
+    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(line), draw_separator, NULL, NULL);
+    return line;
+}
+
+/* The whole row calls the person back; there is no separate Call button. */
+static GtkWidget *recent_row(MainView *self, const MockRecent *recent)
+{
+    const char *name = recent->name ? recent->name : recent->number;
+    char *summary = recent->duration
+        ? g_strdup_printf("%s · %s · %s", recent->kind, recent->duration, recent->time)
+        : g_strdup_printf("%s · %s", recent->kind, recent->time);
+    GtkWidget *row = person_row(self, name, summary, -1, NULL);
+    g_free(summary);
+    if (g_ascii_strcasecmp(recent->kind, "Missed") == 0) {
+        GtkWidget *copy = gtk_widget_get_next_sibling(gtk_widget_get_first_child(row));
+        for (GtkWidget *l = gtk_widget_get_first_child(copy); l; l = gtk_widget_get_next_sibling(l))
+            gtk_widget_add_css_class(l, "error");
+    }
+    GtkWidget *button = gtk_button_new();
+    gtk_button_set_child(GTK_BUTTON(button), row);
+    gtk_widget_add_css_class(button, "flat");
+    gtk_widget_add_css_class(button, "recent-row");
+    char *label = g_strdup_printf("Call back %s", name);
+    gtk_widget_set_tooltip_text(button, label);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(button), GTK_ACCESSIBLE_PROPERTY_LABEL, label, -1);
+    g_free(label);
+    g_object_set_data(G_OBJECT(button), "contact-index", GINT_TO_POINTER(mock_ui_contact_named(recent->name) + 1));
+    g_object_set_data_full(G_OBJECT(button), "number", g_strdup(recent->number), g_free);
+    g_signal_connect(button, "clicked", G_CALLBACK(call_contact), self);
+    return button;
+}
+
 static void render_recents(MainView *self)
 {
     clear_box(self->recents_box);
@@ -371,29 +420,11 @@ static void render_recents(MainView *self)
             found++;
         }
     } else {
-        /* Equal-width text columns keep every Call button aligned right beside the names. */
-        GtkSizeGroup *names = gtk_size_group_new(GTK_SIZE_GROUP_HORIZONTAL);
         for (size_t i = 0; i < mock_recents_count && !self->model->empty_recents; i++) {
-            const MockRecent *recent = &mock_recents[i];
-            char *summary = recent->duration
-                ? g_strdup_printf("%s · %s · %s", recent->kind, recent->duration, recent->time)
-                : g_strdup_printf("%s · %s", recent->kind, recent->time);
-            GtkWidget *row = person_row(self, recent->name ? recent->name : recent->number, summary,
-                                        mock_ui_contact_named(recent->name), recent->number);
-            g_free(summary);
-            GtkWidget *text = gtk_widget_get_next_sibling(gtk_widget_get_first_child(row));
-            gtk_widget_set_hexpand(text, FALSE);
-            gtk_label_set_max_width_chars(GTK_LABEL(gtk_widget_get_first_child(text)), 24);
-            gtk_size_group_add_widget(names, text);
-            if (g_ascii_strcasecmp(recent->kind, "Missed") == 0) {
-                GtkWidget *copy = gtk_widget_get_next_sibling(gtk_widget_get_first_child(row));
-                for (GtkWidget *l = gtk_widget_get_first_child(copy); l; l = gtk_widget_get_next_sibling(l))
-                    gtk_widget_add_css_class(l, "error");
-            }
-            gtk_box_append(GTK_BOX(self->recents_box), row);
+            if (i) gtk_box_append(GTK_BOX(self->recents_box), recent_separator());
+            gtk_box_append(GTK_BOX(self->recents_box), recent_row(self, &mock_recents[i]));
             found++;
         }
-        g_object_unref(names);
     }
     if (!found) gtk_box_append(GTK_BOX(self->recents_box),
         empty_state(*query ? "system-search-symbolic" : "view-list-symbolic",
@@ -476,13 +507,6 @@ static GtkWidget *build_dial(MainView *self)
     gtk_box_append(GTK_BOX(page), grid);
     GtkWidget *actions = hbox(12);
     gtk_widget_set_halign(actions, GTK_ALIGN_CENTER);
-    self->siri_button = gtk_button_new_with_label("Siri");
-    gtk_widget_add_css_class(self->siri_button, "pill");
-    gtk_widget_set_tooltip_text(self->siri_button,
-        "Talk to Siri on your iPhone through this laptop, for example \"FaceTime audio Mom\"");
-    g_object_set_data(G_OBJECT(self->siri_button), "mock-action", GINT_TO_POINTER(MOCK_MAIN_SIRI));
-    g_signal_connect(self->siri_button, "clicked", G_CALLBACK(action_clicked), self);
-    gtk_box_append(GTK_BOX(actions), self->siri_button);
     self->dial_button = gtk_button_new_with_label("Call");
     gtk_widget_add_css_class(self->dial_button, "suggested-action");
     gtk_widget_add_css_class(self->dial_button, "pill");
@@ -569,6 +593,28 @@ static void on_sync_banner(MainView *self)
     emit(self, MOCK_MAIN_SYNC, -1, NULL);
 }
 
+/* Siri has its own clear accent button on the connection card, shown on every tab. */
+static GtkWidget *siri_button_new(MainView *self)
+{
+    self->siri_button = gtk_button_new();
+    GtkWidget *siri_content = adw_button_content_new();
+    adw_button_content_set_icon_name(ADW_BUTTON_CONTENT(siri_content), "audio-input-microphone-symbolic");
+    adw_button_content_set_label(ADW_BUTTON_CONTENT(siri_content), "Siri");
+    gtk_button_set_child(GTK_BUTTON(self->siri_button), siri_content);
+    gtk_widget_set_name(self->siri_button, "siri-button");
+    gtk_widget_add_css_class(self->siri_button, "suggested-action");
+    gtk_widget_set_tooltip_text(self->siri_button,
+        "Talk to Siri on your iPhone through this laptop, for example \"FaceTime audio Mom\"");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(self->siri_button), GTK_ACCESSIBLE_PROPERTY_LABEL, "Siri", -1);
+    g_object_set_data(G_OBJECT(self->siri_button), "mock-action", GINT_TO_POINTER(MOCK_MAIN_SIRI));
+    g_signal_connect(self->siri_button, "clicked", G_CALLBACK(action_clicked), self);
+    gtk_widget_set_halign(self->siri_button, GTK_ALIGN_END);
+    gtk_widget_set_valign(self->siri_button, GTK_ALIGN_START);
+    gtk_widget_set_margin_top(self->siri_button, 10);
+    gtk_widget_set_margin_end(self->siri_button, 10);
+    return self->siri_button;
+}
+
 static GtkWidget *build_connected(MainView *self)
 {
     GtkWidget *body = vbox(0);
@@ -606,7 +652,10 @@ static GtkWidget *build_connected(MainView *self)
     gtk_label_set_xalign(GTK_LABEL(caption), 0.5);
     g_object_set_data(G_OBJECT(self->connection_card), "caption", caption);
     gtk_box_append(GTK_BOX(self->connection_card), caption);
-    adw_clamp_set_child(ADW_CLAMP(clamp), self->connection_card);
+    GtkWidget *card_overlay = gtk_overlay_new();
+    gtk_overlay_set_child(GTK_OVERLAY(card_overlay), self->connection_card);
+    gtk_overlay_add_overlay(GTK_OVERLAY(card_overlay), siri_button_new(self));
+    adw_clamp_set_child(ADW_CLAMP(clamp), card_overlay);
     gtk_box_append(GTK_BOX(body), clamp);
     self->pages = adw_view_stack_new();
     gtk_widget_set_vexpand(self->pages, TRUE);
@@ -777,7 +826,9 @@ GtkWidget *mock_main_window_new(GtkApplication *app, MockUiModel *model,
             "viewswitcherbar image { -gtk-icon-size: 32px; }"
             ".dial-key { min-width: 64px; min-height: 64px; padding: 0; }"
             ".comfy-search { min-height: 44px; font-size: 1.1em; }"
-            ".connection-card { padding: 20px; }");
+            ".connection-card { padding: 20px; }"
+            ".recent-separator { color: @window_fg_color; }"
+            ".recent-row { padding: 0; font-weight: normal; }");
         gtk_style_context_add_provider_for_display(gdk_display_get_default(),
             GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
     }

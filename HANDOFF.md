@@ -2,6 +2,23 @@
 
 Date: 2026-09-24. Workspace: `/home/marwan-ahmed/Work/IBlueConnect`. Supersedes the older /tmp handoffs.
 
+## 2026-10-23 (evening) iPhone-style Recents, standalone Siri button — UI installed
+
+User requests: a clear Siri button of its own; no Call button in Recents — tapping the person calls back; centred separator lines spanning 80% of the width between rows (iPhone Recents style).
+
+- **Recents rows** (`render_recents`, `recent_row`, `recent_separator` in `src/mock-ui/main-view.c`): each recent call is one flat button (`.recent-row`) containing avatar, name and `kind · duration · date`; clicking emits `MOCK_MAIN_CALL` with that number (still guarded by `can_call`, so it does nothing while calls are unavailable). The Call button and the size-group alignment from earlier today are gone. Between rows a 1 px `GtkDrawingArea` (`.recent-separator`) draws from 10% to 90% of the width in `@window_fg_color` (near-black in light mode, light in dark mode so it stays visible). Missed rows keep red text. Tap-to-call means an accidental tap places a call, as on the iPhone.
+- **Siri button**: moved off the keypad to its own accent (`suggested-action`) button with a microphone icon at the top-right of the connection card (overlay), so it shows on all three tabs without adding height. The header bar was tried first but widened the default window to 578 px and broke the full-keypad-visible rule.
+- Tests (written first, failed first): `/main/recent-rows` (rows are buttons, no Call button, click calls back the right number, `rows-1` separators, rendered alpha 0 at 5%/95% and >0 at 12%/50%/88%), `/main/siri` (named `siri-button`, outside the view stack, on the card overlay, accent), `/main/connected-home` and `/main/connection-states` updated. 42 UI tests pass on 26.04 and 24.04; mock renders inspected. UI-only: installed to `~/.local/bin/iblueconnect` (self-test OK), no daemon restart. One already-open UI process keeps the old look until reopened.
+
+**Planned, not built (user request): "!" info button per recent row** that opens the full list of recent calls with that person (iPhone-style call details: each call's direction, time, duration). Recents already carry per-call name/number; the detail view can reuse the contact detail's "Recent Calls" section filtered by number rather than name.
+
+**Sluggishness — measured cause and proposed fixes (not implemented, awaiting user choice).** The live cache holds about 918 contacts and 170 recent calls (counts only). Every `refresh()` — each Snapshot/Calls reply, each daemon `Changed` signal, and every search keystroke — destroys and rebuilds every Recents and Contacts row (thousands of widgets with avatars) in `render_recents`/`render_contacts`. Options, cheapest first:
+1. Rebuild lists only when list data or the search text changes (ContactsChanged/RecentsChanged, search), not on call-state refreshes. Small change, large win.
+2. Debounce search typing (~150 ms) so one rebuild happens per pause, not per key.
+3. Replace the hand-built boxes with virtualized `GtkListView` + `GListStore` models so only visible rows exist (biggest win, larger refactor; keeps memory low too).
+4. Build the UI with optimization (`-O2`; `packaging/build-mock-ui.sh` currently uses `-g` only). Minor, since GTK dominates.
+5. Cap the Recents list (e.g., latest 100) with "Show more".
+
 ## 2026-10-23 (later) Siri button, Recents alignment, BlueZ crash triage — installed, live acceptance pending
 
 **BlueZ "crash" triage (read-only, private, counts only).** `bluetoothd` did not crash: 0 service restarts and no crash lines in the current and three previous boots. Ubuntu's crash notices come from `/usr/bin/mpris-proxy` (bluez 5.85-4ubuntu0.4, the AVRCP↔MPRIS media-control bridge, a user service): SIGSEGV, 14 core dumps in 30 days, 12 of them 2–5 s after the phone connects (`bluetooth.target` reached). Two crashes had no nearby connect/OBEX event. IBlueConnect never talks to mpris-proxy or MPRIS/AVRCP; the OBEX start at connect coincides but does not explain the unrelated crashes. Unsymbolized stack; no upstream report found (closest: [Sailfish mpris-proxy crash-on-connect thread](https://forum.sailfishos.org/t/4-4-0-mpris-proxy-service-crashing-and-not-restarting/9861)). Effect: phone media keys/now-playing on the laptop may stop until mpris-proxy restarts. Options needing user approval (Bluetooth-related service change): `systemctl --user mask mpris-proxy.service`, or a `Restart=on-failure` override; or report to Ubuntu via the crash dialog. Nothing changed.
