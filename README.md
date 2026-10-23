@@ -37,14 +37,14 @@ Live integration status:
 
 | Feature | Current implementation |
 |---|---|
-| Floating incoming/active controller | Follows daemon call state; incoming calls launch the controller in background mode with Ignore, Decline, and Answer. |
-| Dialing, mute, in-call keypad, hold/resume, add/merge/end calls | Connected to daemon operations; full live acceptance is still pending for several controls. |
+| Floating incoming/active controller | Follows daemon call state; incoming calls launch the controller in background mode with equal-width Ignore, Decline (red) and Answer (green) pills, sized to its content. The active controller matches the voice strip: soft tiles for Mute ("Mute"/"Muted"), Audio and Keypad, a compact toggle, and a wide red End pill. |
+| Dialing, mute, in-call keypad, hold/resume, call waiting, swap, add/merge/end calls, conference management | Connected to daemon operations; full live acceptance is still pending for several controls. |
 | Device status, contacts, recents, battery, voice strip | Connected to daemon data. Apple-inspired bar strip: your voice (system accent) from the left, the caller (green) from the right, avatar ring shows who speaks. Your side is flat while muted; it does not confirm remote audibility. |
 | Siri over Bluetooth | "Ask Siri" button in its own row under the connection card starts Siri on the iPhone (HFP voice recognition); speak and hear Siri through the laptop, e.g. "FaceTime audio Mom". Needs a ready link, no calls, unlocked screen. Live behavior pending. |
 | Appearance | System / Light / Dark / Black in the phone menu (Black is GNOME Dark with near-black surfaces); saved, and the call controller always matches the main window. |
 | Recents | iPhone-style rows: tap a person to call back; centred separator lines (90% of width); latest 50 calls with "Show more". Planned: "!" button showing all recent calls with that person; virtualized lists for large phone books. |
-| Lock privacy and guarded exit controls | Current source hides private windows while locked. Quit, Disconnect, and confirmed Forget require fresh idle state; active or uncertain calls block exit because automatic audio handoff is unavailable. |
-| Audio transfer and preferences | Laptop/phone transfer is not implemented; preference switches exist only in developer mode and are not persisted. |
+| Lock privacy and guarded exit controls | Installed: private windows hide while the screen is locked. Quit, Disconnect, and confirmed Forget require fresh idle state; active or uncertain calls block exit because automatic audio handoff is unavailable. |
+| Audio transfer and preferences | Laptop/phone transfer is not implemented. Only the appearance choice is saved; other preference switches exist only in developer mode and are not persisted. |
 
 X11 can place the mock call panel near the top-right and request above-window visibility. Wayland uses a normal GTK window because GNOME does not give applications reliable absolute placement. Headless UI tests do not establish live GNOME Shell behavior.
 
@@ -222,7 +222,7 @@ The current machine has demonstrated app-originated calling, contact and call-hi
 
 ### Missing implementation
 
-- Persisted preferences/startup controls, separate optional sync consent, saved primary-phone selection, and standalone Clear call history. The packaged first run now requests combined background/audio/sync consent, checks dependencies/state, and keeps backups; sync starts automatically when the manually connected phone becomes ready. Guarded Forget is implemented in the October 23 source update.
+- Persisted preferences/startup controls (only the appearance choice is saved so far), separate optional sync consent, saved primary-phone selection, and standalone Clear call history. The packaged first run now requests combined background/audio/sync consent, checks dependencies/state, and keeps backups; sync starts automatically when the manually connected phone becomes ready. Guarded Forget is implemented and installed (October 23).
 - App-operated phone/laptop audio transfer, actual input/output display, Open Sound settings, and exit during an ongoing call. New guarded Quit/Disconnect/Forget controls require fresh idle/zero-audio state and block active or uncertain calls; automatic handoff is unavailable. Disconnect/Forget pause monitoring until **Resume call monitoring** is chosen after manual connection. Automatic laptop-initiated Bluetooth connection remains excluded.
 - Silent notification-center entries/actions for locally observed missed calls. The presentation policy exists, but the current daemon effect runner does not execute those notification effects. Phone-synced missed calls must remain completely silent and only appear in Recents.
 
