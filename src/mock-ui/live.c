@@ -57,9 +57,10 @@ void live_apply_snapshot(MockUiModel *model, const char *status, const char *id,
         }
     } else if (strcmp(phase, "active") == 0) {
         if (call == MOCK_CALL_IDLE || call == MOCK_CALL_INCOMING || call == MOCK_CALL_INCOMING_IGNORED) {
-            /* First seen active, or answered on the iPhone: the call belongs to the phone. */
+            /* Answered on the iPhone after ringing here stays on the phone; a call first seen already
+             * active (the phone connected mid-call) opens the controller. */
             model->call = MOCK_CALL_ACTIVE;
-            model->popup_visible = false;
+            model->popup_visible = call == MOCK_CALL_IDLE;
             model->elapsed_seconds = 0;
         } else if (call == MOCK_CALL_OUTGOING || call == MOCK_CALL_CONNECTING) {
             model->call = MOCK_CALL_ACTIVE;

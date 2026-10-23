@@ -69,6 +69,14 @@ static void answered_here_becomes_the_controller(void)
     assert(model.call == MOCK_CALL_IDLE && !model.popup_visible);
 }
 
+/* Connecting the phone mid-call: a call first seen already active opens the controller. */
+static void call_in_progress_at_connect_is_shown(void)
+{
+    MockUiModel model = live_model();
+    live_apply_snapshot(&model, "ready", "/call1", "active", "Dad", NULL);
+    assert(model.call == MOCK_CALL_ACTIVE && model.popup_visible);
+}
+
 static void answered_on_phone_stays_off_screen(void)
 {
     MockUiModel model = live_model();
@@ -282,8 +290,8 @@ static void conference_controls_match_the_daemon(void)
 static void waiting_call_raises_banner_until_ignored(void)
 {
     MockUiModel model = live_model();
-    live_apply_snapshot(&model, "ready", "/a", "active", "A", "111"); /* Answered on the phone: hidden. */
-    assert(model.call == MOCK_CALL_ACTIVE && !model.popup_visible);
+    live_apply_snapshot(&model, "ready", "/a", "active", "A", "111"); /* Already in progress: shown. */
+    assert(model.call == MOCK_CALL_ACTIVE && model.popup_visible);
     GVariant *rows = calls("[('/a', 'active', 'laptop', 'A', '111', false),"
                            " ('/w', 'waiting', 'laptop', 'W', '999', false)]");
     live_apply_calls(&model, "ready", rows);
@@ -393,6 +401,7 @@ int main(void)
     voice_level_follows_loudness();
     device_details_come_from_the_daemon();
     answered_here_becomes_the_controller();
+    call_in_progress_at_connect_is_shown();
     answered_on_phone_stays_off_screen();
     declined_shows_briefly_then_clears();
     outgoing_waits_for_the_phone();

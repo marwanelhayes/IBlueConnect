@@ -37,7 +37,7 @@ Live integration status:
 
 | Feature | Current implementation |
 |---|---|
-| Floating incoming/active controller | Follows daemon call state; incoming calls launch the controller in background mode with equal-width Ignore, Decline (red) and Answer (green) pills, sized to its content. The active controller matches the voice strip: soft tiles for Mute ("Mute"/"Muted"), Audio and Keypad, a compact toggle, and a wide red End pill. |
+| Floating incoming/active controller | Follows daemon call state; it also opens (silently) when the phone connects mid-call. Incoming calls launch the controller in background mode with equal-width Ignore, Decline (red) and Answer (green) pills, sized to its content. The active controller matches the voice strip: soft tiles for Mute ("Mute"/"Muted"), Audio and Keypad, a compact toggle, and a wide red End pill. |
 | Dialing, mute, in-call keypad, hold/resume, call waiting, swap, add/merge/end calls, conference management | Connected to daemon operations; full live acceptance is still pending for several controls. |
 | Device status, contacts, recents, battery, voice strip | Connected to daemon data. Apple-inspired bar strip: your voice (system accent) from the left, the caller (green) from the right, avatar ring shows who speaks. Your side is flat while muted; it does not confirm remote audibility. |
 | Siri over Bluetooth | "Ask Siri" button in its own row under the connection card starts Siri on the iPhone (HFP voice recognition); speak and hear Siri through the laptop, e.g. "FaceTime audio Mom". Needs a ready link, no calls, unlocked screen. Live behavior pending. |

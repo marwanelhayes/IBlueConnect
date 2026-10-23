@@ -10,6 +10,8 @@ pub enum Effect {
     /// A second call is waiting: show the call controller and play one soft beep.
     ShowWaiting(String),
     WaitingAlert(String),
+    /// The phone connected mid-call: show the call controller silently.
+    ShowActive(String),
 }
 
 struct Ringing {
@@ -152,7 +154,7 @@ impl PresentationPolicy {
                     && missed.posted && !missed.dismissed),
             Effect::RemoveMissed(id) => self.missed.iter()
                 .any(|missed| missed.id == *id && !missed.posted),
-            Effect::ShowWaiting(_) | Effect::WaitingAlert(_) => true,
+            Effect::ShowWaiting(_) | Effect::WaitingAlert(_) | Effect::ShowActive(_) => true,
         }
     }
 

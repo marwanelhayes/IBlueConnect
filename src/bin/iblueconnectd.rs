@@ -281,6 +281,7 @@ impl Worker {
         self.presenter.observe_with(self.backend.observation(), &caller,
             || (screen_locked(lock_session), dnd_active()), &mut |effect| effects.push(effect.clone()));
         self.presenter.waiting(&self.calls, dnd_active, &mut |effect| effects.push(effect.clone()));
+        self.presenter.joined(&self.calls, || screen_locked(lock_session), &mut |effect| effects.push(effect.clone()));
         for effect in effects { run_effect(&effect); }
     }
 
@@ -309,7 +310,9 @@ impl Worker {
             let ofono = OfonoBackend::connect().map_err(|error| error.to_string())?;
             let mut events = ofono.subscribe().map_err(|error| error.to_string())?;
             let epoch = self.epoch.subscribe();
-            self.reconcile(&events.calls());
+            let initial = events.calls();
+            self.presenter.link_connected(&initial);
+            self.reconcile(&initial);
             let tx = self.tx.clone();
             thread::spawn(move || loop {
                 match events.next_update() {
@@ -675,10 +678,28 @@ struct Presenter {
     policy: PresentationPolicy,
     ringing: Option<String>,
     waiting: HashSet<String>,
+    /// A call was already in progress when the phone connected; its controller is still to be shown.
+    joining: bool,
 }
 
 impl Presenter {
-    fn new() -> Self { Self { policy: PresentationPolicy::new(true, true), ringing: None, waiting: HashSet::new() } }
+    fn new() -> Self { Self { policy: PresentationPolicy::new(true, true), ringing: None, waiting: HashSet::new(), joining: false } }
+
+    /// Called with the first call list after the phone connects; ringing calls use the incoming path.
+    fn link_connected(&mut self, calls: &[OfonoCall]) {
+        self.joining = calls.iter().any(|call| matches!(call.state.as_str(), "active" | "held" | "dialing" | "alerting"));
+    }
+
+    /// Shows the controller once, silently, for a call joined mid-way; waits while the screen is
+    /// locked (retried by the 5 s refresh) and gives up when the call ends.
+    fn joined(&mut self, calls: &[OfonoCall], locked: impl FnOnce() -> Option<bool>, run: &mut impl FnMut(&Effect)) {
+        if !self.joining { return; }
+        let Some(call) = calls.first() else { self.joining = false; return };
+        if locked() == Some(false) {
+            self.joining = false;
+            run(&Effect::ShowActive(call.path.clone()));
+        }
+    }
 
     /// Shows the controller with one soft beep per newly waiting call; DND keeps it silent.
     fn waiting(&mut self, calls: &[OfonoCall], dnd: impl FnOnce() -> bool, run: &mut impl FnMut(&Effect)) {
@@ -728,7 +749,7 @@ fn dnd_active() -> bool {
 /// The GUI shows its floating call controller; ringing ends are followed from Snapshot.
 fn effect_command(effect: &Effect, ui: &std::path::Path) -> Option<(std::path::PathBuf, &'static [&'static str])> {
     match effect {
-        Effect::ShowIncoming(..) | Effect::ShowWaiting(_) => Some((ui.to_path_buf(), &["--background"])),
+        Effect::ShowIncoming(..) | Effect::ShowWaiting(_) | Effect::ShowActive(_) => Some((ui.to_path_buf(), &["--background"])),
         Effect::Alert(..) => Some(("canberra-gtk-play".into(), &["-i", "phone-incoming-call"])),
         Effect::WaitingAlert(_) => Some(("canberra-gtk-play".into(), &["-i", "message-new-instant"])),
         _ => None,
@@ -1139,6 +1160,43 @@ mod tests {
         let mut run = Vec::new();
         presenter.waiting(&calls, || dnd, &mut |effect: &Effect| run.push(effect.clone()));
         run
+    }
+
+    fn calls_in(states: &[&str]) -> Vec<OfonoCall> {
+        states.iter().enumerate().map(|(index, state)| OfonoCall {
+            path: format!("/c{}", index + 1), state: (*state).into(), multiparty: false, number: None, name: None,
+        }).collect()
+    }
+
+    fn joined_effects(presenter: &mut Presenter, states: &[&str], locked: Option<bool>) -> Vec<Effect> {
+        let mut run = Vec::new();
+        presenter.joined(&calls_in(states), || locked, &mut |effect: &Effect| run.push(effect.clone()));
+        run
+    }
+
+    #[test]
+    fn a_call_in_progress_when_the_phone_connects_opens_the_controller_once() {
+        let mut presenter = Presenter::new();
+        presenter.link_connected(&calls_in(&["active"]));
+        assert!(joined_effects(&mut presenter, &["active"], Some(true)).is_empty()); // Locked: wait, privately.
+        assert!(joined_effects(&mut presenter, &["active"], None).is_empty()); // Unknown lock state fails closed.
+        assert_eq!(joined_effects(&mut presenter, &["active"], Some(false)), [Effect::ShowActive("/c1".into())]);
+        assert!(joined_effects(&mut presenter, &["active"], Some(false)).is_empty()); // Once, not every refresh.
+        for state in ["held", "dialing", "alerting"] {
+            presenter.link_connected(&calls_in(&[state]));
+            assert_eq!(joined_effects(&mut presenter, &[state], Some(false)).len(), 1);
+        }
+        // A ringing call at connect is left to the incoming path; no call means nothing to open.
+        presenter.link_connected(&calls_in(&["incoming"]));
+        assert!(joined_effects(&mut presenter, &["incoming"], Some(false)).is_empty());
+        presenter.link_connected(&[]);
+        assert!(joined_effects(&mut presenter, &[], Some(false)).is_empty());
+        // A call that ends while the screen is locked is not opened later.
+        presenter.link_connected(&calls_in(&["active"]));
+        assert!(joined_effects(&mut presenter, &[], Some(false)).is_empty());
+        assert!(joined_effects(&mut presenter, &["active"], Some(false)).is_empty());
+        let ui = std::path::Path::new("/ui");
+        assert_eq!(effect_command(&Effect::ShowActive("c".into()), ui), Some((ui.to_path_buf(), &["--background"][..])));
     }
 
     #[test]
