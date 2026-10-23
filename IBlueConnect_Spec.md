@@ -10,7 +10,7 @@ Safe Quit, Disconnect, and confirmed Forget are exposed in the device menu. Fres
 
 **2026-10-23 appearance choice (UI installed):** The phone menu offers System / Light / Dark / Black (Black = GNOME Dark with near-black surfaces). The choice is saved per user and applies to the main window and the call controller together; System follows GNOME and is the default. This refines "follows the system light/dark appearance" into the default of a user choice.
 
-**2026-10-23 controller style (UI installed):** The whole call controller follows the voice strip: soft rounded tiles (Mute, Audio, Keypad with captions under icons; Mute keeps the crossed-microphone icon and reads "Muted"), a wide solid-red End pill, equal-width Ignore/Decline/Answer pills, bold timer. This supersedes the 2026-10-04 icon-only Mute.
+**2026-10-23 controller style (UI installed; one-row update):** All in-call buttons, including Hold/Resume/Merge/Swap/Add call, share one row of tiles; the controller widens to fit instead of adding a row. The whole call controller follows the voice strip: soft rounded tiles (Mute, Audio, Keypad with captions under icons; Mute keeps the crossed-microphone icon and reads "Muted"), a wide solid-red End pill, equal-width Ignore/Decline/Answer pills, bold timer. This supersedes the 2026-10-04 icon-only Mute.
 
 **2026-10-23 Apple-inspired voice strip (UI installed):** One pill-shaped bar strip in the call controller: your voice in the system accent enters from the left, the caller's voice in green from the right, quiet bars are grey dots, your side stays flat while muted, and the avatar ring takes the current speaker's colour. "You" and the caller's name label the two sides. Not a copy of Apple's design; Apple publishes no specification.
 

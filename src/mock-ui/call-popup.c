@@ -12,7 +12,7 @@
 struct MockCallPopup {
     GtkWidget *window, *avatar, *avatar_ring, *audio_content, *end_content, *mute_content, *keypad_content, *identity, *number, *subtitle, *timer;
     GtkWidget *waveform, *levels, *wave_labels, *wave_you, *wave_caller;
-    GtkWidget *incoming, *outgoing, *active, *call_management, *hold_button, *resume_button, *merge_button, *terminal, *details;
+    GtkWidget *incoming, *outgoing, *active, *management_tiles[5], *hold_button, *resume_button, *merge_button, *terminal, *details;
     GtkWidget *compact_button, *expand_button, *mute_button, *keypad_button, *keypad, *tone_feedback, *open_app_button, *end_button;
     GtkWidget *audio_button, *audio_popover, *audio_choices, *audio_empty;
     GtkWidget *waiting, *waiting_caller, *waiting_decline, *hold_answer, *release_answer;
@@ -667,6 +667,21 @@ MockCallPopup *mock_call_popup_new(GtkApplication *app, MockCallPopupAction acti
     popup->keypad_content = tile(keypad_button, "input-dialpad-symbolic", "Keypad");
     g_signal_connect(keypad_button, "clicked", G_CALLBACK(toggle_keypad), popup);
     gtk_box_append(GTK_BOX(popup->active), keypad_button);
+    /* Call management shares the row as tiles, so the controller grows wider instead of taller. */
+    static const char *const management[][3] = {
+        { "Hold", "media-playback-pause-symbolic", "hold" }, { "Resume", "media-playback-start-symbolic", "resume" },
+        { "Merge", "system-users-symbolic", "merge" }, { "Swap", "media-playlist-repeat-symbolic", "swap" },
+        { "Add call", "list-add-symbolic", "add-call" },
+    };
+    GtkWidget **management_buttons[] = { &popup->hold_button, &popup->resume_button, &popup->merge_button,
+                                         &popup->swap_button, &popup->add_call_button };
+    for (guint i = 0; i < G_N_ELEMENTS(management); i++) {
+        GtkWidget *tile_button = action_button(popup, management[i][0], NULL, management[i][2], "");
+        popup->management_tiles[i] = tile(tile_button, management[i][1], management[i][0]);
+        g_object_set_data(G_OBJECT(popup->management_tiles[i]), "tile-text", (gpointer)management[i][0]);
+        *management_buttons[i] = tile_button;
+        gtk_box_append(GTK_BOX(popup->active), tile_button);
+    }
     popup->compact_button = action_button(popup, "Compact", "view-restore-symbolic", "compact", "1");
     gtk_box_append(GTK_BOX(popup->active), popup->compact_button);
     popup->expand_button = action_button(popup, "Expand", "view-fullscreen-symbolic", "expand", "0");
@@ -679,19 +694,6 @@ MockCallPopup *mock_call_popup_new(GtkApplication *app, MockCallPopupAction acti
     popup->end_content = labeled(end, "call-stop-symbolic", "End");
     gtk_box_append(GTK_BOX(popup->active), end);
     gtk_box_append(GTK_BOX(body), popup->active);
-
-    popup->call_management = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    popup->hold_button = action_button(popup, "Hold", NULL, "hold", "");
-    popup->resume_button = action_button(popup, "Resume", NULL, "resume", "");
-    popup->merge_button = action_button(popup, "Merge calls", NULL, "merge", "");
-    gtk_box_append(GTK_BOX(popup->call_management), popup->hold_button);
-    gtk_box_append(GTK_BOX(popup->call_management), popup->resume_button);
-    gtk_box_append(GTK_BOX(popup->call_management), popup->merge_button);
-    popup->swap_button = action_button(popup, "Swap", NULL, "swap", "");
-    gtk_box_append(GTK_BOX(popup->call_management), popup->swap_button);
-    popup->add_call_button = action_button(popup, "Add call", NULL, "add-call", "");
-    gtk_box_append(GTK_BOX(popup->call_management), popup->add_call_button);
-    gtk_box_append(GTK_BOX(body), popup->call_management);
 
     popup->terminal = label("", "heading");
     gtk_widget_set_name(popup->terminal, "terminal-label");
@@ -728,8 +730,6 @@ void mock_call_popup_update(MockCallPopup *popup, const MockUiModel *model)
     gtk_widget_set_visible(popup->incoming, incoming);
     gtk_widget_set_visible(popup->outgoing, outgoing);
     gtk_widget_set_visible(popup->active, active);
-    gtk_widget_set_visible(popup->call_management, active && (model->can_hold || model->can_resume ||
-                           model->can_merge || model->can_swap || model->can_add_call));
     gtk_widget_set_visible(popup->hold_button, active && model->can_hold);
     gtk_widget_set_visible(popup->resume_button, active && model->can_resume && !model->can_swap); /* Swap resumes too. */
     gtk_widget_set_visible(popup->merge_button, active && model->can_merge);
@@ -795,6 +795,9 @@ void mock_call_popup_update(MockCallPopup *popup, const MockUiModel *model)
              "audio-input-microphone-symbolic", model->compact ? "" : model->muted ? "Muted" : "Mute");
     set_tile(popup->keypad_content, NULL, model->compact ? "" : "Keypad");
     set_tile(popup->audio_content, NULL, model->compact ? "" : "Audio");
+    for (guint i = 0; i < G_N_ELEMENTS(popup->management_tiles); i++)
+        set_tile(popup->management_tiles[i], NULL,
+                 model->compact ? "" : g_object_get_data(G_OBJECT(popup->management_tiles[i]), "tile-text"));
     const char *end_label = active && model->can_end_conference ? "End conference" : "End call";
     g_object_set_data(G_OBJECT(popup->end_button), "mock-action",
                       (gpointer)(active && model->can_end_conference ? "end-conference" : "end"));

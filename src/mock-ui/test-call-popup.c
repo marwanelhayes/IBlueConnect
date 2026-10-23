@@ -732,13 +732,20 @@ static void controller_matches_the_strip(gconstpointer ignored)
     g_assert_true(gtk_widget_has_css_class(GTK_WIDGET(window), "call-controller"));
     GtkWidget *keypad = gtk_button_get_child(GTK_BUTTON(find(GTK_WIDGET(window), "keypad-toggle")));
     g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(g_object_get_data(G_OBJECT(keypad), "tile-caption"))), ==, "Keypad");
-    int row = 0; /* Labelled tiles still fit the 360 px controller's 332 px content width (shadows excluded). */
-    gtk_widget_measure(find(GTK_WIDGET(window), "active-actions"), GTK_ORIENTATION_HORIZONTAL, -1, NULL, &row, NULL, NULL);
-    g_assert_cmpint(row, <=, 332);
+
     g_assert_true(gtk_widget_has_css_class(find(GTK_WIDGET(window), "call-timer"), "heading"));
     GtkWidget *end = find(GTK_WIDGET(window), "end");
     g_assert_true(gtk_widget_get_hexpand(end));
     assert_button_color(end, FALSE);
+    /* One row: call management sits beside Mute/Audio/Keypad as tiles instead of a second row. */
+    f.model.can_hold = true;
+    f.model.can_add_call = true;
+    mock_call_popup_update(f.popup, &f.model);
+    GtkWidget *row = find(GTK_WIDGET(window), "active-actions");
+    g_assert_true(gtk_widget_get_parent(find(GTK_WIDGET(window), "hold")) == row);
+    g_assert_true(gtk_widget_get_parent(find(GTK_WIDGET(window), "add-call")) == row);
+    GtkWidget *hold = gtk_button_get_child(GTK_BUTTON(find(GTK_WIDGET(window), "hold")));
+    g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(g_object_get_data(G_OBJECT(hold), "tile-caption"))), ==, "Hold");
     gtk_window_destroy(window);
 }
 
