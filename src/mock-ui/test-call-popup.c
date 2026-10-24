@@ -599,8 +599,6 @@ static void incoming_voice_is_green_from_the_right(gconstpointer ignored)
     g_bytes_unref(ring);
     GBytes *still = wave_pixels(wave);
     g_assert_true(g_bytes_equal(talking, still)); /* No decorative idle animation. */
-    GtkWidget *caller = find(GTK_WIDGET(window), "wave-caller");
-    g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(caller)), ==, gtk_label_get_text(GTK_LABEL(find(GTK_WIDGET(window), "caller-identity"))));
     for (int i = 0; i < 20; i++) mock_call_popup_set_voice(f.popup, 0.0);
     g_assert_false(gtk_widget_has_css_class(avatar, "speaking-them"));
     f.model.live = true; /* Live audio leaving the laptop stills the strip at once. */
@@ -633,8 +631,6 @@ static void outgoing_voice_is_accent_from_the_left(gconstpointer ignored)
     gtk_window_present(window);
     GtkWidget *wave = find(GTK_WIDGET(window), "voice-waveform");
     GtkWidget *avatar = find(GTK_WIDGET(window), "caller-ring");
-    GtkWidget *you = find(GTK_WIDGET(window), "wave-you");
-    g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(you)), ==, "You");
     GBytes *silent = wave_pixels(wave);
     mock_call_popup_set_microphone_level(f.popup, 1.0);
     GBytes *orange = wave_pixels(wave);
@@ -665,11 +661,9 @@ static void outgoing_voice_is_accent_from_the_left(gconstpointer ignored)
     mock_call_popup_set_microphone_level(f.popup, 1.0);
     GBytes *muted = wave_pixels(wave);
     g_assert_true(g_bytes_equal(silent, muted));
-    g_assert_true(gtk_widget_has_css_class(you, "muted"));
     g_assert_false(gtk_widget_has_css_class(avatar, "speaking-me"));
     click(&f, "compact");
     g_assert_true(gtk_widget_is_visible(wave));
-    g_assert_false(gtk_widget_is_visible(you));
     gtk_style_context_remove_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(accent));
     g_object_unref(accent);
     g_bytes_unref(silent);
@@ -767,6 +761,33 @@ static void incoming_window_has_no_empty_space(gconstpointer ignored)
     gtk_window_destroy(window);
 }
 
+/* The in-call controller stays short: number in the subtitle, slim strip, no legend, no empty gaps. */
+static void active_window_is_short(gconstpointer ignored)
+{
+    (void)ignored;
+    Fixture f = {0};
+    mock_ui_init(&f.model);
+    f.model.live = true;
+    f.model.call_audio = true;
+    f.popup = mock_call_popup_new(app, action, &f);
+    mock_ui_incoming(&f.model, 0);
+    mock_ui_answer(&f.model);
+    g_strlcpy(f.model.caller_name, "Test Caller", sizeof f.model.caller_name);
+    g_strlcpy(f.model.dialed_number, "555-0102", sizeof f.model.dialed_number);
+    mock_call_popup_update(f.popup, &f.model);
+    GtkWindow *window = mock_call_popup_window(f.popup);
+    gtk_window_present(window);
+    for (int i = 0; i < 40; i++) while (g_main_context_pending(NULL)) g_main_context_iteration(NULL, FALSE);
+    g_assert_false(gtk_widget_is_visible(find(GTK_WIDGET(window), "caller-number")));
+    g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(find(GTK_WIDGET(window), "call-subtitle"))),
+                    ==, "555-0102");
+    g_assert_null(find(GTK_WIDGET(window), "wave-you"));
+    g_assert_null(find(GTK_WIDGET(window), "wave-caller"));
+    g_assert_cmpint(gtk_widget_get_height(find(GTK_WIDGET(window), "voice-waveform")), <=, 32);
+    g_assert_cmpint(gtk_widget_get_height(GTK_WIDGET(window)), <=, 190);
+    gtk_window_destroy(window);
+}
+
 static void incoming_colors(gconstpointer ignored)
 {
     (void)ignored;
@@ -819,6 +840,7 @@ int main(int argc, char **argv)
     g_test_add_data_func("/popup/outgoing-wave", NULL, outgoing_voice_is_accent_from_the_left);
     g_test_add_data_func("/popup/incoming-colors", NULL, incoming_colors);
     g_test_add_data_func("/popup/incoming-compact-height", NULL, incoming_window_has_no_empty_space);
+    g_test_add_data_func("/popup/active-short-height", NULL, active_window_is_short);
     g_test_add_data_func("/popup/controller-style", NULL, controller_matches_the_strip);
     g_test_add_data_func("/popup/waiting-banner", NULL, waiting_banner);
     g_test_add_data_func("/popup/call-list", NULL, call_list_and_multi_call_actions);

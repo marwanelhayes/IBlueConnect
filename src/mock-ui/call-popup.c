@@ -11,7 +11,7 @@
 
 struct MockCallPopup {
     GtkWidget *window, *avatar, *avatar_ring, *audio_content, *end_content, *mute_content, *keypad_content, *identity, *number, *subtitle, *timer;
-    GtkWidget *waveform, *levels, *wave_labels, *wave_you, *wave_caller;
+    GtkWidget *waveform, *levels;
     GtkWidget *incoming, *outgoing, *active, *management_tiles[5], *hold_button, *resume_button, *merge_button, *terminal, *details;
     GtkWidget *compact_button, *expand_button, *mute_button, *keypad_button, *keypad, *tone_feedback, *open_app_button, *end_button;
     GtkWidget *audio_button, *audio_popover, *audio_choices, *audio_empty;
@@ -113,6 +113,7 @@ static void toggle_keypad(GtkButton *button, gpointer data)
     MockCallPopup *popup = data;
     popup->keypad_open = !popup->keypad_open;
     gtk_widget_set_visible(popup->keypad, popup->keypad_open);
+    gtk_widget_set_visible(popup->details, popup->keypad_open);
     dispatch(popup, "keypad", popup->keypad_open ? "1" : "0");
 }
 
@@ -355,7 +356,8 @@ static void draw_wave(GtkDrawingArea *area, cairo_t *cr, int width, int height, 
         double them = popup->incoming_voice * exp(-3.2 * (1 - t)) * (0.55 + 0.45 * fabs(sin(i * 2.3 + phase * 1.3)));
         double level = MAX(me, them);
         const GdkRGBA *color = me >= them ? &accent : &wave_green;
-        if (level < 0.06) { color = &wave_idle; level = 0.06; }
+        /* A bar no taller than its dot is noise on the slim strip; draw it idle. */
+        if (level < 0.06 || level * height <= bar) { color = &wave_idle; level = 0.06; }
         double h = MAX(bar, level * height);
         gdk_cairo_set_source_rgba(cr, color);
         rounded_bar(cr, i * gap + (gap - bar) / 2, middle - h / 2, bar, h);
@@ -484,9 +486,6 @@ static void install_css(void)
         ".avatar-ring.speaking-them { background-color: #2ec27e; }"
         "#voice-waveform { color: @accent_color; }"
         ".voice-strip { background-color: alpha(@window_fg_color, 0.07); border-radius: 999px; padding: 4px 14px; }"
-        "label.wave-you { color: @accent_color; font-weight: bold; font-size: 0.8em; }"
-        "label.wave-you.muted { color: alpha(@window_fg_color, 0.5); }"
-        "label.wave-caller { color: #2ec27e; font-weight: bold; font-size: 0.8em; }"
         /* The rest of the controller follows the voice strip: soft tinted tiles and full pills. */
         "window.call-controller button { border-radius: 12px; min-height: 40px; padding: 4px 10px; box-shadow: none;"
         " background-image: none; background-color: alpha(@window_fg_color, 0.07); }"
@@ -557,6 +556,7 @@ MockCallPopup *mock_call_popup_new(GtkApplication *app, MockCallPopupAction acti
     gtk_box_append(GTK_BOX(identity_box), popup->identity);
     popup->subtitle = label("via iPhone", "dim-label");
     gtk_widget_set_name(popup->subtitle, "call-subtitle");
+    gtk_label_set_ellipsize(GTK_LABEL(popup->subtitle), PANGO_ELLIPSIZE_END);
     gtk_box_append(GTK_BOX(identity_box), popup->subtitle);
     gtk_box_append(GTK_BOX(top), identity_box);
     popup->timer = label("", "heading");
@@ -575,24 +575,13 @@ MockCallPopup *mock_call_popup_new(GtkApplication *app, MockCallPopupAction acti
     popup->waveform = gtk_drawing_area_new();
     gtk_widget_set_name(popup->waveform, "voice-waveform");
     gtk_widget_set_hexpand(popup->waveform, TRUE);
-    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(popup->waveform), 56);
+    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(popup->waveform), 32);
     gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(popup->waveform), draw_wave, popup, NULL);
     gtk_accessible_update_property(GTK_ACCESSIBLE(popup->waveform), GTK_ACCESSIBLE_PROPERTY_LABEL,
                                    "Voice activity: your voice from the left, the caller's from the right", -1);
     gtk_widget_set_tooltip_text(popup->waveform, "Audio on the call path; reception is not confirmed");
     gtk_box_append(GTK_BOX(strip), popup->waveform);
     gtk_box_append(GTK_BOX(popup->levels), strip);
-    popup->wave_labels = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    popup->wave_you = label("You", "wave-you");
-    gtk_widget_set_name(popup->wave_you, "wave-you");
-    gtk_widget_set_hexpand(popup->wave_you, TRUE);
-    gtk_box_append(GTK_BOX(popup->wave_labels), popup->wave_you);
-    popup->wave_caller = label("", "wave-caller");
-    gtk_widget_set_name(popup->wave_caller, "wave-caller");
-    gtk_label_set_xalign(GTK_LABEL(popup->wave_caller), 1);
-    gtk_label_set_ellipsize(GTK_LABEL(popup->wave_caller), PANGO_ELLIPSIZE_END);
-    gtk_box_append(GTK_BOX(popup->wave_labels), popup->wave_caller);
-    gtk_box_append(GTK_BOX(popup->levels), popup->wave_labels);
     gtk_box_append(GTK_BOX(body), popup->levels);
     popup->details = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     popup->keypad = make_keypad(popup);
@@ -716,10 +705,7 @@ void mock_call_popup_update(MockCallPopup *popup, const MockUiModel *model)
         popup->outgoing_voice = 0;
         show_voice(popup);
     }
-    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(popup->waveform), model->compact ? 20 : 56);
-    gtk_widget_set_visible(popup->wave_labels, !model->compact);
-    if (model->muted) gtk_widget_add_css_class(popup->wave_you, "muted");
-    else gtk_widget_remove_css_class(popup->wave_you, "muted");
+    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(popup->waveform), model->compact ? 20 : 32);
     gtk_widget_set_visible(popup->levels, active);
     gboolean terminal = model->call == MOCK_CALL_DECLINED || model->call == MOCK_CALL_ENDING ||
                         model->call == MOCK_CALL_ENDED;
@@ -757,11 +743,12 @@ void mock_call_popup_update(MockCallPopup *popup, const MockUiModel *model)
     /* No audio routing backend yet. */
     gtk_widget_set_visible(popup->audio_button, !model->live);
     gtk_widget_set_visible(popup->terminal, terminal);
-    gtk_widget_set_visible(popup->details, active && !model->compact);
+    /* Hidden with the keypad: an empty box would still cost a row gap. */
+    gtk_widget_set_visible(popup->details, active && !model->compact && !model->call_held && popup->keypad_open);
     gtk_widget_set_visible(popup->compact_button, active && !model->compact);
     gtk_widget_set_visible(popup->expand_button, active && model->compact);
     gtk_widget_set_visible(popup->keypad_button, active && !model->compact && !model->call_held);
-    gtk_widget_set_visible(popup->number, (incoming || outgoing || active) && !model->compact);
+    gtk_widget_set_visible(popup->number, (incoming || outgoing) && !model->compact); /* In a call it joins the subtitle. */
     gtk_widget_set_visible(popup->keypad, active && !model->compact && !model->call_held && popup->keypad_open);
     gtk_widget_set_visible(popup->timer, active);
     gtk_widget_set_visible(popup->open_app_button, incoming || active);
@@ -776,7 +763,6 @@ void mock_call_popup_update(MockCallPopup *popup, const MockUiModel *model)
     gtk_label_set_text(GTK_LABEL(popup->identity), contact ? contact->name :
                        model->live && model->caller_name[0] ? model->caller_name :
                        model->dialed_number[0] ? model->dialed_number : "Unknown caller");
-    gtk_label_set_text(GTK_LABEL(popup->wave_caller), gtk_label_get_text(GTK_LABEL(popup->identity)));
     gtk_label_set_text(GTK_LABEL(popup->number), model->live ? model->dialed_number :
                        contact ? contact->numbers[0] : incoming ? "Unknown caller" : "");
     if (active && model->call_held)
@@ -785,6 +771,12 @@ void mock_call_popup_update(MockCallPopup *popup, const MockUiModel *model)
         char subtitle[64];
         g_snprintf(subtitle, sizeof subtitle, "%u calls · via iPhone", model->call_count);
         gtk_label_set_text(GTK_LABEL(popup->subtitle), subtitle);
+    } else if (active) {
+        /* The number line is hidden in a call and takes this line, unless it is already the identity. */
+        const char *number = gtk_label_get_text(GTK_LABEL(popup->number));
+        gtk_label_set_text(GTK_LABEL(popup->subtitle),
+                           number[0] && strcmp(number, gtk_label_get_text(GTK_LABEL(popup->identity))) != 0
+                           ? number : "via iPhone");
     } else
         gtk_label_set_text(GTK_LABEL(popup->subtitle), incoming ? "Incoming call · via iPhone" :
                            outgoing ? "Calling… via iPhone" : "via iPhone");
