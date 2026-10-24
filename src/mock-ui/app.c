@@ -576,13 +576,26 @@ static void request_safe_exit(MockApp *app, MockMainAction action)
                       10000, NULL, on_safe_exit, request);
 }
 
+/* The phone gives no end-of-session signal, so the "speak now" prompt lasts about one Siri turn. */
+static gboolean siri_listening_done(gpointer data)
+{
+    MockApp *app = data;
+    app->model.siri = MOCK_SIRI_IDLE;
+    refresh(app);
+    return G_SOURCE_REMOVE;
+}
+
 static void on_siri(GObject *source, GAsyncResult *result, gpointer data)
 {
     MockApp *app = data;
     GError *error = NULL;
     GVariant *value = g_dbus_proxy_call_finish(G_DBUS_PROXY(source), result, &error);
-    if (value) g_variant_unref(value);
-    else {
+    app->model.siri = value ? MOCK_SIRI_LISTENING : MOCK_SIRI_IDLE;
+    refresh(app);
+    if (value) {
+        g_variant_unref(value);
+        g_timeout_add_seconds(8, siri_listening_done, app);
+    } else {
         g_dbus_error_strip_remote_error(error);
         GtkWidget *dialog = exit_dialog(app, "Siri unavailable", error->message);
         adw_message_dialog_add_response(ADW_MESSAGE_DIALOG(dialog), "close", "Close");
@@ -642,8 +655,11 @@ static void main_action(MockMainAction action, int contact_index,
             load_snapshot(app);
         else if (action == MOCK_MAIN_RESUME)
             call_daemon(app, "ResumeMonitoring", NULL, on_call_reply);
-        else if (action == MOCK_MAIN_SIRI)
+        else if (action == MOCK_MAIN_SIRI && app->daemon) {
+            app->model.siri = MOCK_SIRI_STARTING;
+            refresh(app);
             call_daemon(app, "SetVoiceAssistant", g_variant_new("(b)", TRUE), on_siri);
+        }
         else if (action == MOCK_MAIN_CONNECT) {
             GError *error = NULL;
             if (!g_spawn_command_line_async("gnome-control-center bluetooth", &error)) {

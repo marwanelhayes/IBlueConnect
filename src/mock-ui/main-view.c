@@ -75,7 +75,15 @@ static gboolean can_call(const MainView *self)
 static gboolean can_ask_siri(const MainView *self)
 {
     return self->model->connection == MOCK_CONNECTION_CONNECTED && !self->model->calls_unavailable &&
-           self->model->call_count == 0;
+           self->model->call_count == 0 && self->model->siri == MOCK_SIRI_IDLE;
+}
+
+static void sync_siri(MainView *self)
+{
+    static const char *labels[] = { "Ask Siri", "Starting Siri…", "Listening — speak now" };
+    AdwButtonContent *content = ADW_BUTTON_CONTENT(gtk_button_get_child(GTK_BUTTON(self->siri_button)));
+    adw_button_content_set_label(content, labels[self->model->siri]);
+    gtk_widget_set_sensitive(self->siri_button, can_ask_siri(self));
 }
 
 static void emit(MainView *self, MockMainAction action, int index, const char *value)
@@ -1031,7 +1039,7 @@ void mock_main_window_update(GtkWidget *window)
     render_lists(self);
     sync_appearance(self);
     gtk_button_set_label(GTK_BUTTON(self->dial_button), self->model->can_add_call ? "Add call" : "Call");
-    gtk_widget_set_sensitive(self->siri_button, can_ask_siri(self));
+    sync_siri(self);
     dial_changed(GTK_EDITABLE(self->dial_entry), self);
 }
 

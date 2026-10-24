@@ -303,6 +303,19 @@ static void siri_button_starts_siri_only_when_idle(void)
     g_signal_emit_by_name(siri, "clicked");
     g_assert_cmpint(event.count, ==, 1);
     g_assert_cmpint(event.action, ==, MOCK_MAIN_SIRI);
+    /* The button tells the user when Siri is starting and when to speak, and cannot be pressed meanwhile. */
+    model.siri = MOCK_SIRI_STARTING;
+    mock_main_window_update(window);
+    g_assert_nonnull(find_label(siri, "Starting Siri…"));
+    g_assert_false(gtk_widget_is_sensitive(siri));
+    model.siri = MOCK_SIRI_LISTENING;
+    mock_main_window_update(window);
+    g_assert_nonnull(find_label(siri, "Listening — speak now"));
+    g_assert_false(gtk_widget_is_sensitive(siri));
+    model.siri = MOCK_SIRI_IDLE;
+    mock_main_window_update(window);
+    g_assert_nonnull(find_label(siri, "Ask Siri"));
+    g_assert_true(gtk_widget_is_sensitive(siri));
     model.call_count = 1;
     mock_main_window_update(window);
     g_assert_false(gtk_widget_is_sensitive(siri));

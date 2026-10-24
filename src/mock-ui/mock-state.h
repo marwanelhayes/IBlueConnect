@@ -12,6 +12,9 @@ typedef enum {
     MOCK_APPEARANCE_BLACK /* GNOME Dark with near-black surfaces. */
 } MockAppearance;
 
+/* Ask Siri feedback: waiting for the phone to accept, then the user's turn to speak. */
+typedef enum { MOCK_SIRI_IDLE, MOCK_SIRI_STARTING, MOCK_SIRI_LISTENING } MockSiriState;
+
 typedef enum {
     MOCK_CONNECTION_DISCONNECTED,
     MOCK_CONNECTION_CONNECTING,
@@ -110,6 +113,7 @@ typedef struct {
     bool empty_contacts;
     bool empty_recents;
     MockAppearance appearance;
+    MockSiriState siri;
     bool empty_favorites;
     bool empty_audio_devices;
 } MockUiModel;

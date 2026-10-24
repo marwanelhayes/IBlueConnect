@@ -166,7 +166,11 @@ impl OfonoBackend {
     pub fn set_voice_assistant(&self, active: bool) -> Result<(), OfonoError> {
         if active { self.require(|calls| calls.is_empty())?; }
         let handsfree = Proxy::new(&self.connection, "org.ofono", self.modem.as_str(), "org.ofono.Handsfree")?;
-        handsfree.call("SetProperty", &("VoiceRecognition", zbus::zvariant::Value::from(active))).map_err(Into::into)
+        let set = |value: bool| handsfree.call::<_, _, ()>("SetProperty", &("VoiceRecognition", zbus::zvariant::Value::from(value)));
+        // The iPhone never reports that a Siri session ended, so oFono keeps VoiceRecognition true and
+        // silently ignores the next "true". Reset first (best effort) so every start reaches the phone.
+        if active { let _ = set(false); }
+        set(active).map_err(Into::into)
     }
 
     /// Reconciles authoritative oFono call state; route remains unknown here.
@@ -674,13 +678,14 @@ mod tests {
         }
     }
 
-    struct VoiceHandsfree(Arc<Mutex<Option<bool>>>);
+    /// Records every VoiceRecognition write, in order.
+    struct VoiceHandsfree(Arc<Mutex<Vec<bool>>>);
 
     #[zbus::interface(name = "org.ofono.Handsfree")]
     impl VoiceHandsfree {
         fn set_property(&self, name: &str, value: OwnedValue) -> zbus::fdo::Result<()> {
             assert_eq!(name, "VoiceRecognition");
-            *self.0.lock().unwrap() = Some(bool::try_from(value).unwrap());
+            self.0.lock().unwrap().push(bool::try_from(value).unwrap());
             Ok(())
         }
     }
@@ -688,7 +693,7 @@ mod tests {
     #[test]
     fn siri_starts_only_without_calls_and_can_always_stop() {
         let (_bus, address) = PrivateBus::start();
-        let voice = Arc::new(Mutex::new(None));
+        let voice = Arc::new(Mutex::new(Vec::new()));
         let state = Arc::new(Mutex::new(MockState { call_state: Some("active"), ..Default::default() }));
         let _server = Builder::address(address.as_str()).unwrap()
             .name("org.ofono").unwrap()
@@ -699,12 +704,15 @@ mod tests {
         let client = Builder::address(address.as_str()).unwrap().build().unwrap();
         let backend = OfonoBackend::connect_on(client).unwrap();
         assert_eq!(backend.set_voice_assistant(true), Err(OfonoError::StaleCall));
-        assert_eq!(*voice.lock().unwrap(), None);
+        assert!(voice.lock().unwrap().is_empty());
         backend.set_voice_assistant(false).unwrap();
-        assert_eq!(*voice.lock().unwrap(), Some(false));
+        assert_eq!(*voice.lock().unwrap(), [false]);
         state.lock().unwrap().call_state = None;
+        voice.lock().unwrap().clear();
         backend.set_voice_assistant(true).unwrap();
-        assert_eq!(*voice.lock().unwrap(), Some(true));
+        // The iPhone never reports the end of a Siri session, so oFono keeps VoiceRecognition true and
+        // would ignore a second "true"; each start resets it first so the phone receives AT+BVRA=1 again.
+        assert_eq!(*voice.lock().unwrap(), [false, true]);
     }
 
     #[test]
