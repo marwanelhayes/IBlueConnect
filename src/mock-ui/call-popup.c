@@ -22,6 +22,7 @@ struct MockCallPopup {
     MockCallPopupAction action;
     gpointer user_data;
     MockCall phase;
+    gint64 answered_at; /* Monotonic time the controller turned from ringing to active. */
     gboolean held;
     gboolean keypad_open;
     double incoming_voice, outgoing_voice; /* Decaying levels 0..1. */
@@ -94,6 +95,11 @@ static void clicked(GtkButton *button, gpointer data)
     MockCallPopup *popup = data;
     const char *name = g_object_get_data(G_OBJECT(button), "mock-action");
     const char *argument = g_object_get_data(G_OBJECT(button), "mock-argument");
+    /* End appears where Answer was: the second click of a double-click on Answer must not hang up. */
+    int double_click_ms = 400;
+    g_object_get(gtk_widget_get_settings(GTK_WIDGET(button)), "gtk-double-click-time", &double_click_ms, NULL);
+    if (strcmp(name, "end") == 0 && g_get_monotonic_time() - popup->answered_at < 2000 * (gint64)double_click_ms)
+        return;
     dispatch(popup, name, argument ? argument : "");
 }
 
@@ -694,6 +700,9 @@ MockCallPopup *mock_call_popup_new(GtkApplication *app, MockCallPopupAction acti
 
 void mock_call_popup_update(MockCallPopup *popup, const MockUiModel *model)
 {
+    if ((popup->phase == MOCK_CALL_INCOMING || popup->phase == MOCK_CALL_INCOMING_IGNORED) &&
+        model->call == MOCK_CALL_ACTIVE)
+        popup->answered_at = g_get_monotonic_time();
     popup->phase = model->call;
     popup->held = model->call_held;
     gboolean incoming = model->call == MOCK_CALL_INCOMING;

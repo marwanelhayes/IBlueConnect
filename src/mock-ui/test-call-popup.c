@@ -822,11 +822,36 @@ static void incoming_colors(gconstpointer ignored)
     adw_style_manager_set_color_scheme(style, previous);
 }
 
+/* End takes Answer's place, so the second click of a double-click on Answer must not hang up. */
+static void double_click_on_answer_keeps_the_call(gconstpointer ignored)
+{
+    (void)ignored;
+    GtkSettings *settings = gtk_settings_get_default();
+    g_object_set(settings, "gtk-double-click-time", 50, NULL);
+    Fixture f = {0};
+    mock_ui_init(&f.model);
+    f.popup = mock_call_popup_new(app, action, &f);
+    mock_ui_incoming(&f.model, 0);
+    mock_call_popup_update(f.popup, &f.model);
+    click(&f, "answer");
+    click(&f, "end");
+    g_assert_cmpint(f.model.call, ==, MOCK_CALL_ACTIVE);
+    g_assert_cmpstr(f.last_action, ==, "answer");
+    g_usleep(150000); /* Past twice the double-click time: End works again. */
+    click(&f, "end");
+    g_assert_cmpint(f.model.call, ==, MOCK_CALL_ENDING);
+    gtk_window_destroy(mock_call_popup_window(f.popup));
+    g_object_set(settings, "gtk-double-click-time", 0, NULL);
+}
+
 int main(int argc, char **argv)
 {
     gtk_test_init(&argc, &argv);
+    /* Other tests click End right after Answer; double_click_on_answer_keeps_the_call covers the guard. */
+    g_object_set(gtk_settings_get_default(), "gtk-double-click-time", 0, NULL);
     app = gtk_application_new("org.iblueconnect.MockPopupTest", G_APPLICATION_NON_UNIQUE);
     g_application_register(G_APPLICATION(app), NULL, NULL);
+    g_test_add_data_func("/popup/answer-double-click", NULL, double_click_on_answer_keeps_the_call);
     g_test_add_data_func("/popup/incoming-to-active", NULL, incoming_flow);
     g_test_add_data_func("/popup/ignore-decline", NULL, ignore_and_decline);
     g_test_add_data_func("/popup/outgoing-controls", NULL, outgoing_controls);
