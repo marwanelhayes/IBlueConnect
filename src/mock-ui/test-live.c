@@ -1,5 +1,6 @@
 #include "live.h"
 #include <assert.h>
+#include <math.h>
 #include <string.h>
 
 static MockUiModel live_model(void)
@@ -75,6 +76,22 @@ static void call_in_progress_at_connect_is_shown(void)
     MockUiModel model = live_model();
     live_apply_snapshot(&model, "ready", "/call1", "active", "Dad", NULL);
     assert(model.call == MOCK_CALL_ACTIVE && model.popup_visible);
+}
+
+/* Answer pressed here, the reply failed (the UI went back to ringing), yet the phone answered. */
+static void answered_here_after_failed_reply_keeps_the_controller(void)
+{
+    MockUiModel model = live_model();
+    live_apply_snapshot(&model, "ready", "/call1", "incoming", "Dad", NULL);
+    mock_ui_answer(&model);
+    model.call = MOCK_CALL_INCOMING; /* What on_answer does when the daemon reply fails. */
+    live_apply_snapshot(&model, "ready", "/call1", "active", "Dad", NULL);
+    assert(model.call == MOCK_CALL_ACTIVE && model.popup_visible);
+    live_apply_snapshot(&model, "ready", "", "idle", "", NULL);
+    mock_ui_tick(&model);
+    live_apply_snapshot(&model, "ready", "/call2", "incoming", "Dad", NULL);
+    live_apply_snapshot(&model, "ready", "/call2", "active", "Dad", NULL);
+    assert(!model.popup_visible); /* The next call answered on the phone still stays there. */
 }
 
 static void answered_on_phone_stays_off_screen(void)
@@ -385,24 +402,41 @@ static void voice_level_follows_loudness(void)
 {
     gint16 samples[800];
     memset(samples, 0, sizeof samples);
-    assert(live_voice_level(samples, G_N_ELEMENTS(samples)) == 0.0);
+    assert(live_voice_level(samples, G_N_ELEMENTS(samples), 1.0) == 0.0);
     for (size_t i = 0; i < G_N_ELEMENTS(samples); i++) samples[i] = i % 2 ? 16000 : -16000; /* Loud voice. */
-    assert(live_voice_level(samples, G_N_ELEMENTS(samples)) > 0.9);
+    assert(live_voice_level(samples, G_N_ELEMENTS(samples), 1.0) > 0.9);
     for (size_t i = 0; i < G_N_ELEMENTS(samples); i++) samples[i] = i % 2 ? 20 : -20; /* Line hiss. */
-    assert(live_voice_level(samples, G_N_ELEMENTS(samples)) == 0.0);
+    assert(live_voice_level(samples, G_N_ELEMENTS(samples), 1.0) == 0.0);
     for (size_t i = 0; i < G_N_ELEMENTS(samples); i++) samples[i] = i % 2 ? 1000 : -1000; /* Quiet talk. */
-    double quiet = live_voice_level(samples, G_N_ELEMENTS(samples));
+    double quiet = live_voice_level(samples, G_N_ELEMENTS(samples), 1.0);
     assert(quiet > 0.3 && quiet < 0.9);
-    assert(live_voice_level(NULL, 0) == 0.0);
+    assert(live_voice_level(NULL, 0, 1.0) == 0.0);
+}
+
+static void microphone_gain_lifts_quiet_talk_but_not_hiss(void)
+{
+    gint16 samples[800], louder[800];
+    for (size_t i = 0; i < G_N_ELEMENTS(samples); i++) {
+        samples[i] = i % 2 ? 500 : -500;
+        louder[i] = i % 2 ? 2000 : -2000;
+    }
+    assert(LIVE_MICROPHONE_GAIN == 4.0);
+    double gained = live_voice_level(samples, G_N_ELEMENTS(samples), LIVE_MICROPHONE_GAIN);
+    assert(fabs(gained - live_voice_level(louder, G_N_ELEMENTS(louder), 1.0)) < 1e-9);
+    assert(gained > live_voice_level(samples, G_N_ELEMENTS(samples), 1.0));
+    for (size_t i = 0; i < G_N_ELEMENTS(samples); i++) samples[i] = i % 2 ? 20 : -20; /* Hiss stays idle. */
+    assert(live_voice_level(samples, G_N_ELEMENTS(samples), LIVE_MICROPHONE_GAIN) == 0.0);
 }
 
 int main(void)
 {
     voice_level_follows_loudness();
+    microphone_gain_lifts_quiet_talk_but_not_hiss();
     device_details_come_from_the_daemon();
     answered_here_becomes_the_controller();
     call_in_progress_at_connect_is_shown();
     answered_on_phone_stays_off_screen();
+    answered_here_after_failed_reply_keeps_the_controller();
     declined_shows_briefly_then_clears();
     outgoing_waits_for_the_phone();
     ignore_lasts_until_ringing_ends();

@@ -108,6 +108,7 @@ void mock_ui_answer(MockUiModel *model)
     if (model->call != MOCK_CALL_INCOMING)
         return;
     model->call = MOCK_CALL_ACTIVE;
+    model->answered_here = true;
 }
 
 void mock_ui_decline(MockUiModel *model)
@@ -181,6 +182,7 @@ void mock_ui_finish_call(MockUiModel *model)
 {
     model->call = MOCK_CALL_IDLE;
     model->popup_visible = false;
+    model->answered_here = false;
     model->muted = false;
     model->call_count = 0;
     model->waiting_call_id[0] = model->ignored_waiting_id[0] = '\0';

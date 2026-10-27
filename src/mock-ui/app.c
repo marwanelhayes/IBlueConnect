@@ -187,13 +187,13 @@ static void on_call_audio(GObject *source, GAsyncResult *result, gpointer data)
         app->model.muted = muted;
         if (serial != app->voice_serial) {
             live_voice_meter_stop(app->voice);
-            app->voice = live_voice_meter_start(serial, on_voice, app);
+            app->voice = live_voice_meter_start(serial, 1.0, on_voice, app);
             app->voice_serial = app->voice ? serial : 0;
         }
         if (muted) microphone = 0;
         if (microphone != app->microphone_serial) {
             live_voice_meter_stop(app->microphone);
-            app->microphone = microphone ? live_voice_meter_start(microphone, on_microphone, app) : NULL;
+            app->microphone = microphone ? live_voice_meter_start(microphone, LIVE_MICROPHONE_GAIN, on_microphone, app) : NULL;
             app->microphone_serial = app->microphone ? microphone : 0;
         }
         if (!microphone && app->popup) mock_call_popup_set_microphone_level(app->popup, -1);

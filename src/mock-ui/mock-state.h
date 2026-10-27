@@ -80,6 +80,7 @@ typedef struct {
     MockConnection connection;
     MockCall call;
     bool popup_visible;
+    bool answered_here; /* Answer pressed in this app for the current call, even if its reply failed. */
     bool compact;
     bool muted;
     bool can_hold;

@@ -58,9 +58,10 @@ void live_apply_snapshot(MockUiModel *model, const char *status, const char *id,
     } else if (strcmp(phase, "active") == 0) {
         if (call == MOCK_CALL_IDLE || call == MOCK_CALL_INCOMING || call == MOCK_CALL_INCOMING_IGNORED) {
             /* Answered on the iPhone after ringing here stays on the phone; a call first seen already
-             * active (the phone connected mid-call) opens the controller. */
+             * active (the phone connected mid-call) or answered here (even if the reply failed) opens
+             * the controller. */
             model->call = MOCK_CALL_ACTIVE;
-            model->popup_visible = call == MOCK_CALL_IDLE;
+            model->popup_visible = call == MOCK_CALL_IDLE || model->answered_here;
             model->elapsed_seconds = 0;
         } else if (call == MOCK_CALL_OUTGOING || call == MOCK_CALL_CONNECTING) {
             model->call = MOCK_CALL_ACTIVE;
@@ -231,12 +232,12 @@ void live_apply_contacts_status(MockUiModel *model, const char *status)
     model->contact_sync_error = status && g_str_has_prefix(status, "Contact sync failed");
 }
 
-double live_voice_level(const gint16 *samples, size_t count)
+double live_voice_level(const gint16 *samples, size_t count, double gain)
 {
     if (!count) return 0.0;
     double sum = 0;
     for (size_t i = 0; i < count; i++) sum += (double)samples[i] * samples[i];
-    double rms = sqrt(sum / count) / 32768.0;
+    double rms = gain * sqrt(sum / count) / 32768.0;
     if (rms <= 0) return 0.0;
     /* ponytail: fixed -50..-10 dBFS window; add a calibration setting if real calls sit outside it. */
     return CLAMP((20 * log10(rms) + 50) / 40, 0.0, 1.0);
@@ -245,6 +246,7 @@ double live_voice_level(const gint16 *samples, size_t count)
 struct LiveVoiceMeter {
     GSubprocess *process;
     GCancellable *cancel;
+    double gain;
     LiveVoiceFn fn; /* NULL once stopped. */
     gpointer data;
     bool reading; /* A read (or its callback) is in flight and will free a stopped meter. */
@@ -266,7 +268,7 @@ static void on_meter_read(GObject *source, GAsyncResult *result, gpointer data)
     LiveVoiceMeter *meter = data;
     gssize bytes = g_input_stream_read_finish(G_INPUT_STREAM(source), result, NULL);
     if (meter->fn) /* -1 tells the owner the stream ended, e.g. the audio moved to the iPhone. */
-        meter->fn(bytes > 0 ? live_voice_level(meter->buffer, (size_t)bytes / 2) : -1.0, meter->data);
+        meter->fn(bytes > 0 ? live_voice_level(meter->buffer, (size_t)bytes / 2, meter->gain) : -1.0, meter->data);
     meter->reading = false;
     if (!meter->fn) meter_free(meter);
     else if (bytes > 0) meter_read(meter); /* Otherwise the stream ended; stop() frees it. */
@@ -279,7 +281,7 @@ static void meter_read(LiveVoiceMeter *meter)
                               sizeof meter->buffer, G_PRIORITY_DEFAULT, meter->cancel, on_meter_read, meter);
 }
 
-LiveVoiceMeter *live_voice_meter_start(guint64 serial, LiveVoiceFn fn, gpointer data)
+LiveVoiceMeter *live_voice_meter_start(guint64 serial, double gain, LiveVoiceFn fn, gpointer data)
 {
     char target[32];
     g_snprintf(target, sizeof target, "%" G_GUINT64_FORMAT, serial);
@@ -291,6 +293,7 @@ LiveVoiceMeter *live_voice_meter_start(guint64 serial, LiveVoiceFn fn, gpointer 
     LiveVoiceMeter *meter = g_new0(LiveVoiceMeter, 1);
     meter->process = process;
     meter->cancel = g_cancellable_new();
+    meter->gain = gain;
     meter->fn = fn;
     meter->data = data;
     meter_read(meter);

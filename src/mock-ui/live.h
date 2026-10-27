@@ -19,14 +19,21 @@ void live_apply_contacts_status(MockUiModel *model, const char *status);
 LiveData *live_load(GVariant *contacts, GVariant *recents, gint64 now);
 void live_free(LiveData *data);
 
-/* Loudness of 16-bit mono samples as 0..1; line hiss reads as 0. */
-double live_voice_level(const gint16 *samples, size_t count);
+/* Loudness of 16-bit mono samples as 0..1 after a linear amplitude gain; line hiss reads as 0. */
+double live_voice_level(const gint16 *samples, size_t count, double gain);
+
+/* Your side's meter gain. Old value 1.0 (no gain); new value 4.0 (about +12 dB), set 2026-10-25.
+ * Calculation: the caller's voice arrives at telephony nominal speech level, about -26 dBov (ITU-T P.56),
+ * which meters 0.60; a raw laptop mic at normal talking distance is about -38 dBFS (estimate, not measured),
+ * which meters 0.30. The 12 dB gap is 10^(12/20) = 3.98 as amplitude, so 4.0 makes both sides meter alike.
+ * The caller's side keeps gain 1.0. */
+#define LIVE_MICROPHONE_GAIN 4.0
 
 /* Taps the call's incoming-voice PipeWire stream (read-only) and reports its level about 20 times a second,
  * then -1 once if the stream ends. The callback may stop the meter. */
 typedef void (*LiveVoiceFn)(double level, gpointer data);
 typedef struct LiveVoiceMeter LiveVoiceMeter;
-LiveVoiceMeter *live_voice_meter_start(guint64 serial, LiveVoiceFn fn, gpointer data);
+LiveVoiceMeter *live_voice_meter_start(guint64 serial, double gain, LiveVoiceFn fn, gpointer data);
 void live_voice_meter_stop(LiveVoiceMeter *meter);
 
 #endif
