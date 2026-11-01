@@ -169,8 +169,13 @@ impl OfonoBackend {
         let set = |value: bool| handsfree.call::<_, _, ()>("SetProperty", &("VoiceRecognition", zbus::zvariant::Value::from(value)));
         // The iPhone never reports that a Siri session ended, so oFono keeps VoiceRecognition true and
         // silently ignores the next "true". Reset first (best effort) so every start reaches the phone.
+        let started = std::time::Instant::now();
         if active { let _ = set(false); }
-        set(active).map_err(Into::into)
+        let reset = started.elapsed();
+        let result = set(active);
+        // No private data: tells whether the phone's reply to the reset or to the start is the slow part.
+        eprintln!("Siri {active}: reset {} ms, set {} ms", reset.as_millis(), (started.elapsed() - reset).as_millis());
+        result.map_err(Into::into)
     }
 
     /// Reconciles authoritative oFono call state; route remains unknown here.

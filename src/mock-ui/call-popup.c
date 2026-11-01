@@ -313,8 +313,8 @@ static gboolean place_after_resize(gpointer data)
 #endif
 
 #define SPEAKING_LEVEL 0.3
-#define WAVE_BARS 22
-/* GNOME palette green for the other person; your side follows the system (Ubuntu) accent. */
+#define WAVE_BARS 62
+/* GNOME palette green for the other person; your side is the blue of the phone-to-laptop link. */
 static const GdkRGBA wave_green = { 0.180, 0.761, 0.494, 1.0 };
 static const GdkRGBA wave_idle = { 0.6, 0.6, 0.62, 1.0 };
 
@@ -355,7 +355,7 @@ static void draw_wave(GtkDrawingArea *area, cairo_t *cr, int width, int height, 
     MockCallPopup *popup = data;
     GdkRGBA accent;
     gtk_widget_get_color(GTK_WIDGET(area), &accent);
-    double gap = (double)width / WAVE_BARS, bar = gap * 0.55, middle = height / 2.0;
+    double gap = (double)width / WAVE_BARS, bar = gap * 0.38, middle = height / 2.0;
     for (int i = 0; i < WAVE_BARS; i++) {
         double t = (double)i / (WAVE_BARS - 1), phase = popup->wave_step * 0.6;
         double me = popup->outgoing_voice * exp(-3.2 * t) * (0.55 + 0.45 * fabs(sin(i * 1.7 + phase)));
@@ -485,20 +485,31 @@ static void install_css(void)
     if (installed) return;
     installed = TRUE;
     GtkCssProvider *css = gtk_css_provider_new();
-    /* Your voice uses the system accent, the caller's voice green, as on the iPhone. */
+    /* Your voice is blue, the caller's voice green, as on the iPhone. */
     gtk_css_provider_load_from_string(css,
-        ".avatar-ring { padding: 3px; border-radius: 999px; }"
-        ".avatar-ring.speaking-me { background-color: @accent_color; }"
+        "window { font-family: \"Hanken Grotesk\", sans-serif; }"
+        "window.call-controller { background-color: @view_bg_color; color: alpha(@view_fg_color, 1.25); }"
+        "window.call-controller avatar { background-color: @view_bg_color; background-image: none;"
+        " color: alpha(@view_fg_color, 1.25); box-shadow: inset 0 0 0 1px alpha(@view_fg_color, 0.3);"
+        " font-family: \"Spectral\", serif; font-weight: 300; }"
+        ".avatar-ring { padding: 2px; border-radius: 999px; }"
+        ".avatar-ring.speaking-me { background-color: #2f6fff; }"
         ".avatar-ring.speaking-them { background-color: #2ec27e; }"
-        "#voice-waveform { color: @accent_color; }"
-        ".voice-strip { background-color: alpha(@window_fg_color, 0.07); border-radius: 999px; padding: 4px 14px; }"
-        /* The rest of the controller follows the voice strip: soft tinted tiles and full pills. */
-        "window.call-controller button { border-radius: 12px; min-height: 40px; padding: 4px 10px; box-shadow: none;"
-        " background-image: none; background-color: alpha(@window_fg_color, 0.07); }"
-        "window.call-controller button:hover { background-color: alpha(@window_fg_color, 0.12); }"
-        "window.call-controller button:active { background-color: alpha(@window_fg_color, 0.18); }"
+        "#voice-waveform { color: #2f6fff; }"
+        "#caller-identity { font-family: \"Spectral\", serif; font-weight: 300; font-size: 23px; }"
+        "#call-subtitle { font-family: \"Spectral\", serif; font-weight: 300; font-size: 14.5px; }"
+        "#call-timer { font-family: \"Spectral\", serif; font-weight: 300; font-size: 26px; font-feature-settings: \"tnum\", \"lnum\"; }"
+        /* The rest of the controller is soft tinted tiles and full pills. */
+        "window.call-controller button { border-radius: 14px; min-height: 40px; padding: 4px 10px; box-shadow: none;"
+        " background-image: none; background-color: alpha(@view_fg_color, 0.06); font-weight: 500;"
+        " transition: background-color 150ms ease-out; }"
+        "window.call-controller button:hover { background-color: alpha(@view_fg_color, 0.1); }"
+        "window.call-controller button:active { background-color: alpha(@view_fg_color, 0.16); }"
+        "window.call-controller button#open-app { background: none; min-height: 0; padding: 0; border-radius: 0;"
+        " font-size: 12.5px; font-weight: normal; color: alpha(@view_fg_color, 0.6); }"
+        "window.call-controller button#open-app:hover { color: alpha(@view_fg_color, 1.25); }"
         "window.call-controller button.call-answer, window.call-controller button.call-decline,"
-        " window.call-controller button.destructive-action { border-radius: 999px; padding: 0 18px; font-weight: bold; }"
+        " window.call-controller button.destructive-action { border-radius: 999px; padding: 0 18px; }"
         "window.call-controller button.destructive-action { background-color: #c01c28; color: #fff; }"
         "window.call-controller button.destructive-action:hover { background-color: #d02030; }"
         "window.call-controller button.destructive-action:active { background-color: #a01824; }"
@@ -565,19 +576,22 @@ MockCallPopup *mock_call_popup_new(GtkApplication *app, MockCallPopupAction acti
     gtk_label_set_ellipsize(GTK_LABEL(popup->subtitle), PANGO_ELLIPSIZE_END);
     gtk_box_append(GTK_BOX(identity_box), popup->subtitle);
     gtk_box_append(GTK_BOX(top), identity_box);
+    GtkWidget *clock = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_valign(clock, GTK_ALIGN_START);
     popup->timer = label("", "heading");
     gtk_widget_set_name(popup->timer, "call-timer");
-    gtk_box_append(GTK_BOX(top), popup->timer);
+    gtk_label_set_xalign(GTK_LABEL(popup->timer), 1);
+    gtk_box_append(GTK_BOX(clock), popup->timer);
     popup->open_app_button = action_button(popup, "Open app", NULL, "open-app", "");
-    gtk_box_append(GTK_BOX(top), popup->open_app_button);
+    gtk_widget_set_halign(popup->open_app_button, GTK_ALIGN_END);
+    gtk_box_append(GTK_BOX(clock), popup->open_app_button);
+    gtk_box_append(GTK_BOX(top), clock);
     gtk_box_append(GTK_BOX(body), top);
 
     popup->number = label("", "dim-label");
     gtk_widget_set_name(popup->number, "caller-number");
     gtk_box_append(GTK_BOX(body), popup->number);
     popup->levels = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-    GtkWidget *strip = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_widget_add_css_class(strip, "voice-strip");
     popup->waveform = gtk_drawing_area_new();
     gtk_widget_set_name(popup->waveform, "voice-waveform");
     gtk_widget_set_hexpand(popup->waveform, TRUE);
@@ -586,8 +600,7 @@ MockCallPopup *mock_call_popup_new(GtkApplication *app, MockCallPopupAction acti
     gtk_accessible_update_property(GTK_ACCESSIBLE(popup->waveform), GTK_ACCESSIBLE_PROPERTY_LABEL,
                                    "Voice activity: your voice from the left, the caller's from the right", -1);
     gtk_widget_set_tooltip_text(popup->waveform, "Audio on the call path; reception is not confirmed");
-    gtk_box_append(GTK_BOX(strip), popup->waveform);
-    gtk_box_append(GTK_BOX(popup->levels), strip);
+    gtk_box_append(GTK_BOX(popup->levels), popup->waveform);
     gtk_box_append(GTK_BOX(body), popup->levels);
     popup->details = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     popup->keypad = make_keypad(popup);
@@ -757,7 +770,7 @@ void mock_call_popup_update(MockCallPopup *popup, const MockUiModel *model)
     gtk_widget_set_visible(popup->compact_button, active && !model->compact);
     gtk_widget_set_visible(popup->expand_button, active && model->compact);
     gtk_widget_set_visible(popup->keypad_button, active && !model->compact && !model->call_held);
-    gtk_widget_set_visible(popup->number, (incoming || outgoing) && !model->compact); /* In a call it joins the subtitle. */
+    gtk_widget_set_visible(popup->number, outgoing && !model->compact); /* Ringing or in a call it is the subtitle. */
     gtk_widget_set_visible(popup->keypad, active && !model->compact && !model->call_held && popup->keypad_open);
     gtk_widget_set_visible(popup->timer, active);
     gtk_widget_set_visible(popup->open_app_button, incoming || active);
@@ -780,15 +793,14 @@ void mock_call_popup_update(MockCallPopup *popup, const MockUiModel *model)
         char subtitle[64];
         g_snprintf(subtitle, sizeof subtitle, "%u calls · via iPhone", model->call_count);
         gtk_label_set_text(GTK_LABEL(popup->subtitle), subtitle);
-    } else if (active) {
-        /* The number line is hidden in a call and takes this line, unless it is already the identity. */
+    } else if (active || incoming) {
+        /* The number line is hidden and takes this line, unless it is already the identity. */
         const char *number = gtk_label_get_text(GTK_LABEL(popup->number));
         gtk_label_set_text(GTK_LABEL(popup->subtitle),
                            number[0] && strcmp(number, gtk_label_get_text(GTK_LABEL(popup->identity))) != 0
                            ? number : "via iPhone");
     } else
-        gtk_label_set_text(GTK_LABEL(popup->subtitle), incoming ? "Incoming call · via iPhone" :
-                           outgoing ? "Calling… via iPhone" : "via iPhone");
+        gtk_label_set_text(GTK_LABEL(popup->subtitle), outgoing ? "Calling… via iPhone" : "via iPhone");
     gtk_label_set_text(GTK_LABEL(popup->terminal), model->call == MOCK_CALL_DECLINED ? "Call Declined" :
                        model->call == MOCK_CALL_ENDING ? "Ending call…" : "Call Ended");
     gtk_widget_set_tooltip_text(popup->mute_button, model->muted ? "Unmute" : "Mute");

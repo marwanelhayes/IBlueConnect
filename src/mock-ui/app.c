@@ -36,6 +36,7 @@ typedef struct {
     guint state_epoch;
     bool exit_pending;
     GtkWidget *exit_dialog;
+    gint64 siri_started, siri_heard; /* Monotonic time of the press and of the last audio link seen. */
 } MockApp;
 
 typedef struct { MockApp *app; guint epoch; } StateRequest;
@@ -576,12 +577,45 @@ static void request_safe_exit(MockApp *app, MockMainAction action)
                       10000, NULL, on_safe_exit, request);
 }
 
-/* The phone gives no end-of-session signal, so the "speak now" prompt lasts about one Siri turn. */
-static gboolean siri_listening_done(gpointer data)
+#define SIRI_POLL_MS 250 /* Only while Siri is starting or listening; each check costs one pw-dump. */
+
+static gboolean siri_poll(gpointer data);
+
+static void on_siri_audio(GObject *source, GAsyncResult *result, gpointer data)
 {
     MockApp *app = data;
-    app->model.siri = MOCK_SIRI_IDLE;
-    refresh(app);
+    GVariant *value = reply(source, result);
+    if (app->model.siri == MOCK_SIRI_IDLE) { /* The start failed while this check was on its way. */
+        if (value) g_variant_unref(value);
+        return;
+    }
+    gboolean audio = FALSE, over = FALSE;
+    if (value) {
+        g_variant_get(value, "(b)", &audio);
+        g_variant_unref(value);
+    }
+    gint64 now = g_get_monotonic_time();
+    if (audio) app->siri_heard = now;
+    MockSiriState next = value ? live_siri_step(app->model.siri, audio, app->model.call_count > 0,
+                                                (now - app->siri_started) / 1000, (now - app->siri_heard) / 1000, &over)
+                               : MOCK_SIRI_IDLE;
+    /* Cleared now, the next press reaches the phone in one command instead of a stop and a start. */
+    if (over) call_daemon(app, "SetVoiceAssistant", g_variant_new("(b)", FALSE), on_ignored_reply);
+    if (next != app->model.siri) {
+        app->model.siri = next;
+        refresh(app);
+    }
+    if (next != MOCK_SIRI_IDLE) g_timeout_add(SIRI_POLL_MS, siri_poll, app);
+}
+
+static gboolean siri_poll(gpointer data)
+{
+    MockApp *app = data;
+    if (app->daemon) call_daemon(app, "VoiceAssistantAudio", NULL, on_siri_audio);
+    else {
+        app->model.siri = MOCK_SIRI_IDLE;
+        refresh(app);
+    }
     return G_SOURCE_REMOVE;
 }
 
@@ -590,12 +624,10 @@ static void on_siri(GObject *source, GAsyncResult *result, gpointer data)
     MockApp *app = data;
     GError *error = NULL;
     GVariant *value = g_dbus_proxy_call_finish(G_DBUS_PROXY(source), result, &error);
-    app->model.siri = value ? MOCK_SIRI_LISTENING : MOCK_SIRI_IDLE;
-    refresh(app);
-    if (value) {
-        g_variant_unref(value);
-        g_timeout_add_seconds(8, siri_listening_done, app);
-    } else {
+    if (value) g_variant_unref(value); /* The phone accepted; its audio link decides when to speak. */
+    else {
+        app->model.siri = MOCK_SIRI_IDLE;
+        refresh(app);
         g_dbus_error_strip_remote_error(error);
         GtkWidget *dialog = exit_dialog(app, "Siri unavailable", error->message);
         adw_message_dialog_add_response(ADW_MESSAGE_DIALOG(dialog), "close", "Close");
@@ -657,8 +689,10 @@ static void main_action(MockMainAction action, int contact_index,
             call_daemon(app, "ResumeMonitoring", NULL, on_call_reply);
         else if (action == MOCK_MAIN_SIRI && app->daemon) {
             app->model.siri = MOCK_SIRI_STARTING;
+            app->siri_started = app->siri_heard = g_get_monotonic_time();
             refresh(app);
             call_daemon(app, "SetVoiceAssistant", g_variant_new("(b)", TRUE), on_siri);
+            g_timeout_add(SIRI_POLL_MS, siri_poll, app);
         }
         else if (action == MOCK_MAIN_CONNECT) {
             GError *error = NULL;

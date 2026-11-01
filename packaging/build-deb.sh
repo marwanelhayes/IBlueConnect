@@ -45,6 +45,8 @@ install -Dm644 "$root/packaging/systemd/iblueconnectd-package.service" "$stage/u
 install -Dm644 "$root/packaging/desktop/org.iblueconnect.IBlueConnect.desktop" "$stage/usr/share/applications/org.iblueconnect.IBlueConnect.desktop"
 printf '%s\n' "$ubuntu" > "$lib/ubuntu-version"
 printf '%s\n' "$version" > "$lib/version"
+install -Dm644 -t "$stage/usr/share/fonts/truetype/iblueconnect" "$root"/packaging/fonts/*.ttf
+install -m644 "$root/packaging/fonts/Spectral-OFL.txt" "$root/packaging/fonts/HankenGrotesk-OFL.txt" "$doc/"
 upstream="$root/target/rnnoise/noise-suppression-for-voice-1.10"
 install -m644 "$upstream/LICENSE" "$doc/noise-suppression-for-voice-LICENSE"
 install -m644 "$upstream/external/rnnoise/COPYING" "$doc/RNNoise-COPYING"
@@ -55,6 +57,8 @@ noise-suppression-for-voice v1.10 (LADSPA plugin):
  https://github.com/werman/noise-suppression-for-voice/tree/v1.10
  Its GPL-3.0 license and RNNoise copyright notice accompany this package.
  Matching upstream source is distributed with the GitHub release.
+Spectral and Hanken Grotesk fonts (/usr/share/fonts/truetype/iblueconnect):
+ SIL Open Font License 1.1; Spectral-OFL.txt and HankenGrotesk-OFL.txt accompany this package.
 EOF
 cat > "$work/debian/control" <<'EOF'
 Source: iblueconnect

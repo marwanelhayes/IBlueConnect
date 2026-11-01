@@ -48,6 +48,7 @@ enum Operation {
     SafeExit(ExitAction),
     ResumeMonitoring,
     VoiceAssistant(bool),
+    VoiceAssistantAudio,
     Contacts,
     SyncContacts,
     Recents,
@@ -64,6 +65,7 @@ enum Reply {
     Contacts(String, ContactList),
     Recents(String, RecentList),
     BatteryStatus(String),
+    VoiceAssistantAudio(bool),
 }
 
 enum Message {
@@ -168,6 +170,14 @@ impl Service {
 
     /// Start or stop Siri on the phone over the hands-free link (HFP voice recognition).
     fn set_voice_assistant(&self, active: bool) -> zbus::fdo::Result<()> { self.command(Operation::VoiceAssistant(active)) }
+
+    /// Whether the phone's hands-free audio link is open; the UI follows a Siri session with it.
+    fn voice_assistant_audio(&self) -> zbus::fdo::Result<bool> {
+        match self.request(Operation::VoiceAssistantAudio)? {
+            Reply::VoiceAssistantAudio(open) => Ok(open),
+            _ => unreachable!(),
+        }
+    }
 
     /// Resume monitoring after a manual reconnect; never initiates the Bluetooth link.
     fn resume_monitoring(&self) -> zbus::fdo::Result<()> { self.command(Operation::ResumeMonitoring) }
@@ -351,6 +361,9 @@ impl Worker {
         if let Operation::Recents = operation {
             return Reply::Recents(self.contacts.status(), self.contacts.recents(&self.local_history()));
         }
+        if let Operation::VoiceAssistantAudio = operation {
+            return Reply::VoiceAssistantAudio(hfp_nodes_present().unwrap_or(false));
+        }
         if let Operation::BatteryStatus = operation {
             return Reply::BatteryStatus(battery_status(self.ofono.as_ref().and_then(OfonoBackend::battery_level)));
         }
@@ -426,7 +439,7 @@ impl Worker {
             Operation::Action(action, id) => self.backend.plan_action(action, &id),
             Operation::Dial(number) => self.backend.plan_dial(&number),
             Operation::Tone(id, tone) => self.backend.plan_tone(&id, tone),
-            Operation::Snapshot | Operation::SnapshotDetails | Operation::Calls | Operation::CallAudio | Operation::CallAudioDetails | Operation::SetMuted(_) | Operation::Contacts | Operation::SyncContacts | Operation::Recents | Operation::BatteryStatus | Operation::SafeExit(_) | Operation::ResumeMonitoring | Operation::VoiceAssistant(_)
+            Operation::Snapshot | Operation::SnapshotDetails | Operation::Calls | Operation::CallAudio | Operation::CallAudioDetails | Operation::SetMuted(_) | Operation::VoiceAssistantAudio | Operation::Contacts | Operation::SyncContacts | Operation::Recents | Operation::BatteryStatus | Operation::SafeExit(_) | Operation::ResumeMonitoring | Operation::VoiceAssistant(_)
                 | Operation::Hold(_) | Operation::Resume(_) | Operation::AddCall(_) | Operation::Merge | Operation::EndCall(_) | Operation::EndConference
                 | Operation::Swap | Operation::PrivateChat(_) | Operation::HoldAndAnswer(_) | Operation::ReleaseAndAnswer(_) => unreachable!(),
         };

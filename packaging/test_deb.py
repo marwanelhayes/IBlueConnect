@@ -23,6 +23,7 @@ class PackageTest(unittest.TestCase):
             for name in ("ofono-enable.sh", "ofono-rollback.sh", "rnnoise.sh",
                          "first-run.sh", "iblueconnect-launcher.sh", "setup-user.py"):
                 (packaging / name).write_text("#!/bin/sh\nexit 0\n")
+            shutil.copytree(PACKAGING / "fonts", packaging / "fonts")
             (packaging / "systemd").mkdir()
             (packaging / "systemd/iblueconnectd-package.service").write_text(
                 "[Service]\nExecStart=/usr/lib/iblueconnect/iblueconnectd\n")
@@ -57,7 +58,11 @@ class PackageTest(unittest.TestCase):
                          "usr/lib/iblueconnect/setup-user.py",
                          "usr/lib/iblueconnect/setup-venv/bin/python3",
                          "usr/lib/systemd/user/iblueconnectd.service",
-                         "usr/share/doc/iblueconnect/RNNoise-COPYING"):
+                         "usr/share/doc/iblueconnect/RNNoise-COPYING",
+                         "usr/share/fonts/truetype/iblueconnect/Spectral-Light.ttf",
+                         "usr/share/fonts/truetype/iblueconnect/HankenGrotesk.ttf",
+                         "usr/share/doc/iblueconnect/Spectral-OFL.txt",
+                         "usr/share/doc/iblueconnect/HankenGrotesk-OFL.txt"):
                 self.assertTrue((extracted / item).is_file(), item)
             self.assertEqual((extracted / "usr/lib/iblueconnect/ubuntu-version").read_text().strip(), version)
             for hook in ("preinst", "postinst", "prerm", "postrm"):

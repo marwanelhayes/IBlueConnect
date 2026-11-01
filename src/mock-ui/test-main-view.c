@@ -123,6 +123,17 @@ static void on_action(MockMainAction action, int index, const char *value, gpoin
     event->count++;
 }
 
+static GtkWidget *find_type(GtkWidget *root, GType type)
+{
+    if (G_TYPE_CHECK_INSTANCE_TYPE(root, type)) return root;
+    for (GtkWidget *child = gtk_widget_get_first_child(root); child;
+         child = gtk_widget_get_next_sibling(child)) {
+        GtkWidget *found = find_type(child, type);
+        if (found) return found;
+    }
+    return NULL;
+}
+
 static void connected_home(void)
 {
     MockUiModel model;
@@ -131,25 +142,26 @@ static void connected_home(void)
     g_application_register(G_APPLICATION(app), NULL, NULL);
     GtkWidget *window = mock_main_window_new(app, &model, NULL, NULL);
     g_assert_nonnull(find_label(window, "Favorites"));
-    g_assert_nonnull(find_label(window, "Recent Calls"));
+    g_assert_nonnull(find_label(window, "Recent calls"));
     g_assert_nonnull(find_label(window, "Contacts"));
-    g_assert_nonnull(find_label(window, "Dial"));
-    g_assert_nonnull(find_label(window, "iPhone connected · Calls ready"));
+    g_assert_nonnull(find_label(window, "Keypad"));
+    g_assert_nonnull(find_label(window, "Connected, calls ready"));
     g_assert_true(ADW_IS_AVATAR(find_avatar(window, "Ahmed Mohamed")));
     const MockRecent *first_missed = NULL;
     for (size_t i = 0; i < mock_recents_count && !first_missed; i++)
         if (g_ascii_strcasecmp(mock_recents[i].kind, "Missed") == 0 && !mock_recents[i].duration)
             first_missed = &mock_recents[i];
     g_assert_nonnull(first_missed);
-    char *missed_text = g_strdup_printf("Missed · %s", first_missed->time);
-    GtkWidget *missed = find_label(window, missed_text);
-    g_free(missed_text);
+    GtkWidget *missed = find_label(window, "Missed");
     g_assert_nonnull(missed);
     g_assert_true(gtk_widget_has_css_class(missed, "error"));
     GtkWidget *missed_row = gtk_widget_get_ancestor(missed, GTK_TYPE_BUTTON);
     g_assert_nonnull(missed_row);
     g_assert_true(gtk_widget_has_css_class(missed_row, "recent-row"));
     g_assert_false(gtk_widget_has_css_class(missed_row, "error"));
+    g_assert_true(gtk_widget_has_css_class(find_label(missed_row, first_missed->name), "error"));
+    g_assert_nonnull(find_label(missed_row, first_missed->time)); /* The time has its own right-hand label. */
+    g_assert_null(find_type(missed_row, ADW_TYPE_AVATAR)); /* Recents rows carry no avatar. */
     gtk_window_destroy(GTK_WINDOW(window));
     g_object_unref(app);
 }
@@ -180,7 +192,7 @@ static void connection_states(void)
     model.calls_unavailable = true;
     model.contact_sync_error = true;
     mock_main_window_update(window);
-    g_assert_nonnull(find_label(window, "iPhone connected · Calls unavailable"));
+    g_assert_nonnull(find_label(window, "Calls unavailable"));
     g_assert_nonnull(find_label(window, "Calls · Unavailable"));
     g_assert_nonnull(find_label(window, "Contacts · Update failed"));
     GtkWidget *pages = find_pages(window);
@@ -228,7 +240,7 @@ static void search_dial_and_empty_states(void)
     g_assert_nonnull(entry);
     gtk_editable_set_text(GTK_EDITABLE(entry), "0101234");
     g_assert_nonnull(find_label(window, "Ahmed Mohamed"));
-    GtkWidget *dial_page = gtk_widget_get_parent(entry);
+    GtkWidget *dial_page = gtk_widget_get_ancestor(entry, ADW_TYPE_VIEW_STACK);
     GtkWidget *call = find_button(dial_page, "Call");
     g_assert_nonnull(call);
     g_signal_emit_by_name(call, "clicked");
@@ -254,11 +266,14 @@ static void default_window_keeps_keypad_visible(void)
     for (int i = 0; i < 20; i++) while (g_main_context_iteration(NULL, FALSE));
     g_assert_cmpint(gtk_widget_get_width(window), <=, 500);
     GtkWidget *dial = adw_view_stack_get_visible_child(ADW_VIEW_STACK(pages));
-    GtkWidget *last_key = find_button(dial, "#");
+    GtkWidget *last_key = find_named(dial, "dial-key-#");
     graphene_rect_t bounds;
     g_assert_nonnull(last_key);
     g_assert_true(gtk_widget_compute_bounds(last_key, dial, &bounds));
     g_assert_cmpfloat(bounds.origin.y + bounds.size.height, <=, gtk_widget_get_height(dial));
+    g_assert_cmpfloat(bounds.size.height, <=, 60); /* User: the keypad looked too big at 72. */
+    g_assert_cmpfloat(bounds.size.width, <=, 90);
+    g_assert_cmpint(gtk_widget_get_width(find_button(dial, "Call")), <=, 240);
     gtk_window_destroy(GTK_WINDOW(window));
     g_object_unref(app);
 }
@@ -298,7 +313,7 @@ static void siri_button_starts_siri_only_when_idle(void)
     g_assert_null(gtk_widget_get_ancestor(siri, GTK_TYPE_OVERLAY)); /* Its own row, not tucked into the card. */
     g_assert_true(gtk_widget_has_css_class(siri, "pill"));
     g_assert_nonnull(find_label(siri, "Ask Siri"));
-    g_assert_true(gtk_widget_has_css_class(siri, "suggested-action"));
+    g_assert_false(gtk_widget_has_css_class(siri, "suggested-action")); /* Outlined, not an accent fill. */
     g_assert_true(gtk_widget_is_sensitive(siri));
     g_signal_emit_by_name(siri, "clicked");
     g_assert_cmpint(event.count, ==, 1);
@@ -401,8 +416,9 @@ static void contact_details(void)
     g_assert_nonnull(find_label(GTK_WIDGET(detail), "010 1234 5678"));
     g_assert_nonnull(find_label(GTK_WIDGET(detail), "Work"));
     g_assert_nonnull(find_label(GTK_WIDGET(detail), "02 1234 5678"));
-    g_assert_nonnull(find_label(GTK_WIDGET(detail), "Recent Calls"));
-    g_assert_nonnull(find_label(GTK_WIDGET(detail), "17:42  ·  Incoming  ·  12 min"));
+    g_assert_nonnull(find_label(GTK_WIDGET(detail), "Recent calls"));
+    g_assert_nonnull(find_label(GTK_WIDGET(detail), "Incoming, 12 min"));
+    g_assert_nonnull(find_label(GTK_WIDGET(detail), "17:42"));
     g_signal_emit_by_name(find_button(GTK_WIDGET(detail), "Call"), "clicked");
     g_assert_cmpint(event.action, ==, MOCK_MAIN_CALL);
     g_assert_cmpint(event.index, ==, 0);
@@ -479,7 +495,7 @@ static void device_popover(void)
     g_assert_nonnull(find_label(window, "Disconnected"));
     g_assert_nonnull(find_label(window, "Calls · Unavailable"));
     g_assert_nonnull(find_label(window, "Audio · Unavailable"));
-    g_assert_nonnull(find_label(window, "iPhone ×"));
+    g_assert_nonnull(find_label(window, "iPhone not connected"));
     gtk_window_destroy(GTK_WINDOW(window));
     g_free(event.value);
     g_object_unref(app);
@@ -498,8 +514,7 @@ static void appearance_choice(void)
     GtkWidget *system = find_named(window, "appearance-system");
     GtkWidget *light = find_named(window, "appearance-light");
     GtkWidget *dark = find_named(window, "appearance-dark");
-    GtkWidget *black = find_named(window, "appearance-black");
-    g_assert_nonnull(black);
+    g_assert_null(find_named(window, "appearance-black"));
     g_assert_nonnull(system);
     g_assert_nonnull(light);
     g_assert_nonnull(dark);
@@ -513,11 +528,6 @@ static void appearance_choice(void)
     g_assert_cmpint(event.count, ==, 1);
     g_assert_cmpint(event.action, ==, MOCK_MAIN_APPEARANCE);
     g_assert_cmpstr(event.value, ==, "dark");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(black), TRUE);
-    g_assert_cmpstr(event.value, ==, "black");
-    model.appearance = MOCK_APPEARANCE_BLACK;
-    mock_main_window_update(window);
-    g_assert_true(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(black)));
     gtk_window_destroy(GTK_WINDOW(window));
     g_free(event.value);
     g_object_unref(app);
@@ -573,17 +583,6 @@ static void keyboard_shortcuts(void)
     g_object_unref(app);
 }
 
-static GtkWidget *find_type(GtkWidget *root, GType type)
-{
-    if (G_TYPE_CHECK_INSTANCE_TYPE(root, type)) return root;
-    for (GtkWidget *child = gtk_widget_get_first_child(root); child;
-         child = gtk_widget_get_next_sibling(child)) {
-        GtkWidget *found = find_type(child, type);
-        if (found) return found;
-    }
-    return NULL;
-}
-
 static void title_is_centered(void)
 {
     MockUiModel model;
@@ -626,6 +625,78 @@ static guint8 pixel_alpha(cairo_surface_t *surface, int x, int y)
 }
 
 /* iPhone-style Recents: the whole row calls back, no Call button, centred 90% separators between rows. */
+/* The "!" on a Recents row opens that caller's card without calling, and Back returns to Recents. */
+static void recent_info_opens_the_card(void)
+{
+    MockUiModel model;
+    mock_ui_init(&model);
+    Event event = {0};
+    GtkApplication *app = gtk_application_new("org.iblueconnect.MockRecentInfoTest", 0);
+    g_application_register(G_APPLICATION(app), NULL, NULL);
+    GtkWidget *window = mock_main_window_new(app, &model, on_action, &event);
+    GtkWidget *pages = find_pages(window);
+    GtkWidget *info = find_named(window, "recent-info");
+    g_assert_nonnull(info);
+    g_assert_nonnull(find_label(info, "!"));
+    g_assert_cmpstr(gtk_widget_get_tooltip_text(info), ==, "Details for Ahmed Mohamed");
+    g_signal_emit_by_name(info, "clicked");
+    g_assert_cmpint(event.count, ==, 0); /* Looks, never calls. */
+    g_assert_cmpstr(adw_view_stack_get_visible_child_name(ADW_VIEW_STACK(pages)), ==, "contacts");
+    GtkWidget *split = find_split(window);
+    g_assert_true(adw_navigation_split_view_get_show_content(ADW_NAVIGATION_SPLIT_VIEW(split)));
+    GtkWidget *detail = gtk_widget_get_ancestor(find_label(window, "Phone numbers"), GTK_TYPE_BOX);
+    g_assert_nonnull(find_label(detail, "Ahmed Mohamed"));
+    g_assert_nonnull(find_label(detail, "Recent calls"));
+    g_assert_nonnull(find_label(detail, "Incoming, 12 min"));
+    GtkWidget *back = find_tooltip(detail, "Back to recents");
+    g_assert_nonnull(back);
+    g_signal_emit_by_name(back, "clicked");
+    g_assert_cmpstr(adw_view_stack_get_visible_child_name(ADW_VIEW_STACK(pages)), ==, "recents");
+    g_assert_false(adw_navigation_split_view_get_show_content(ADW_NAVIGATION_SPLIT_VIEW(split)));
+    /* Opening a contact from Contacts afterwards goes back to Contacts, not Recents. */
+    g_assert_null(find_tooltip(window, "Back to recents"));
+    g_assert_nonnull(find_tooltip(window, "Back to contacts"));
+    /* A caller who is not a contact still gets a card: their number and their calls only. */
+    const MockContact *saved_contacts = mock_contacts;
+    const MockRecent *saved_recents = mock_recents;
+    const size_t *saved_favorites = mock_favorites;
+    size_t contacts_count = mock_contacts_count, recents_count = mock_recents_count, favorites_count = mock_favorites_count;
+    static const MockContact contacts[] = { { "Ahmed Mohamed", { "010 1234 5678" }, { "Mobile" } } };
+    static const MockRecent recents[] = {
+        { NULL, "0100 000 0001", "Missed", "9:00", NULL },
+        { "Ahmed Mohamed", "010 1234 5678", "Outgoing", "8:00", "5 min" },
+        { NULL, "0100 000 0002", "Incoming", "7:00", "2 min" },
+        { NULL, "", "Missed", "6:00", NULL },
+    };
+    mock_ui_set_data(contacts, 1, recents, 4, NULL, 0);
+    mock_main_window_update(window);
+    info = find_named(window, "recent-info");
+    g_assert_cmpstr(gtk_widget_get_tooltip_text(info), ==, "Details for 0100 000 0001");
+    g_signal_emit_by_name(info, "clicked");
+    detail = gtk_widget_get_ancestor(find_label(window, "Phone numbers"), GTK_TYPE_BOX);
+    g_assert_nonnull(find_tooltip(detail, "Call 0100 000 0001"));
+    g_assert_nonnull(find_label(detail, "Missed"));
+    g_assert_null(find_label(detail, "Incoming, 2 min"));
+    g_assert_null(find_label(detail, "Outgoing, 5 min"));
+    g_signal_emit_by_name(find_tooltip(detail, "Back to recents"), "clicked");
+    /* A withheld number: nothing to call and nothing guessed. */
+    GPtrArray *infos = g_ptr_array_new();
+    collect_class(window, "recent-info", infos);
+    g_assert_cmpuint(infos->len, ==, 4);
+    info = infos->pdata[3];
+    g_ptr_array_free(infos, TRUE);
+    g_assert_cmpstr(gtk_widget_get_tooltip_text(info), ==, "Details for Unknown caller");
+    g_signal_emit_by_name(info, "clicked");
+    detail = gtk_widget_get_ancestor(find_tooltip(window, "Back to recents"), GTK_TYPE_BOX);
+    g_assert_nonnull(find_label(detail, "Unknown caller"));
+    g_assert_null(find_button(detail, "Call"));
+    g_assert_null(find_label(detail, "Phone numbers"));
+    gtk_window_destroy(GTK_WINDOW(window));
+    g_free(event.value);
+    g_object_unref(app);
+    mock_ui_set_data(saved_contacts, contacts_count, saved_recents, recents_count, saved_favorites, favorites_count);
+}
+
 static void recent_rows_call_back_and_have_centred_separators(void)
 {
     MockUiModel model;
@@ -744,26 +815,17 @@ static void comfortable_proportions(void)
     GtkWidget *window = mock_main_window_new(app, &model, NULL, NULL);
     gtk_window_present(GTK_WINDOW(window));
     for (int i = 0; i < 20; i++) while (g_main_context_iteration(NULL, FALSE));
-    g_assert_null(find_button(window, "2 ABC"));
-    g_assert_nonnull(find_button(window, "2"));
+    GtkWidget *two = find_named(window, "dial-key-2");
+    g_assert_nonnull(find_label(two, "2"));
+    g_assert_nonnull(find_label(two, "ABC"));
     GtkWidget *search = find_search(window, "Search contacts or enter a number");
     g_assert_cmpint(gtk_widget_get_height(search), >=, 44);
-    GtkWidget *card = gtk_widget_get_parent(find_label(window, "iPhone connected · Calls ready"));
-    graphene_rect_t card_box;
-    g_assert_true(gtk_widget_compute_bounds(card, window, &card_box));
-    g_assert_cmpfloat(card_box.size.height, >=, 110);
-    GtkWidget *bar = find_type(window, ADW_TYPE_VIEW_SWITCHER_BAR);
-    GtkWidget *icon = find_type(bar, GTK_TYPE_IMAGE);
-    g_assert_nonnull(icon);
-    int icon_min = 0;
-    gtk_widget_measure(icon, GTK_ORIENTATION_VERTICAL, -1, &icon_min, NULL, NULL, NULL);
-    g_assert_cmpint(icon_min, >=, 32);
     GtkWidget *pages = find_pages(window);
     adw_view_stack_set_visible_child_name(ADW_VIEW_STACK(pages), "dial");
     for (int i = 0; i < 20; i++) while (g_main_context_iteration(NULL, FALSE));
     GtkWidget *dial = adw_view_stack_get_visible_child(ADW_VIEW_STACK(pages));
     graphene_rect_t five;
-    g_assert_true(gtk_widget_compute_bounds(find_button(dial, "5"), dial, &five));
+    g_assert_true(gtk_widget_compute_bounds(find_named(dial, "dial-key-5"), dial, &five));
     g_assert_cmpint(gtk_widget_get_height(window), <=, 700);
     g_assert_cmpfloat(five.size.width, <=, 80);
     g_assert_cmpfloat(five.size.height, <=, 80);
@@ -871,6 +933,90 @@ static void non_ascii_names_get_letter_sections(void)
     mock_contacts_count = saved_count;
 }
 
+/* Text tabs, in this order, stay in step with the pages whichever side changes first. */
+static void tabs_follow_the_pages(void)
+{
+    MockUiModel model;
+    mock_ui_init(&model);
+    GtkApplication *app = gtk_application_new("org.iblueconnect.MockTabsTest", 0);
+    g_application_register(G_APPLICATION(app), NULL, NULL);
+    GtkWidget *window = mock_main_window_new(app, &model, NULL, NULL);
+    g_assert_null(find_type(window, ADW_TYPE_VIEW_SWITCHER));
+    g_assert_null(find_type(window, ADW_TYPE_VIEW_SWITCHER_BAR));
+    GtkWidget *pages = find_pages(window);
+    GtkWidget *recents = find_named(window, "tab-recents"), *dial = find_named(window, "tab-dial"),
+              *contacts = find_named(window, "tab-contacts");
+    g_assert_nonnull(find_label(recents, "Recents"));
+    g_assert_nonnull(find_label(dial, "Keypad"));
+    g_assert_nonnull(find_label(contacts, "Contacts"));
+    g_assert_true(gtk_widget_get_next_sibling(recents) == dial);
+    g_assert_true(gtk_widget_get_next_sibling(dial) == contacts);
+    g_assert_true(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(recents)));
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(contacts), TRUE);
+    g_assert_cmpstr(adw_view_stack_get_visible_child_name(ADW_VIEW_STACK(pages)), ==, "contacts");
+    press(window, "<Control>d");
+    g_assert_true(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(dial)));
+    g_assert_false(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(contacts)));
+    gtk_window_destroy(GTK_WINDOW(window));
+    g_object_unref(app);
+}
+
+/* A ready link is one blue wire; an unavailable link is red with an X, and says so. */
+static void link_is_blue_when_ready_and_red_with_x_otherwise(void)
+{
+    MockUiModel model;
+    mock_ui_init(&model);
+    GtkApplication *app = gtk_application_new("org.iblueconnect.MockLinkTest", 0);
+    g_application_register(G_APPLICATION(app), NULL, NULL);
+    GtkWidget *window = mock_main_window_new(app, &model, NULL, NULL);
+    GtkWidget *link = find_named(window, "link-status");
+    GtkWidget *wire = find_named(link, "link-wire"), *x = find_named(link, "link-x"), *far = find_named(link, "link-wire-far");
+    GdkRGBA color;
+    gtk_widget_get_color(wire, &color);
+    g_assert_cmpfloat(color.blue, >, color.red * 2);
+    g_assert_false(gtk_widget_get_visible(x));
+    g_assert_false(gtk_widget_get_visible(far));
+    g_assert_nonnull(find_label(link, "Connected, calls ready"));
+    model.calls_unavailable = true;
+    mock_main_window_update(window);
+    gtk_widget_get_color(wire, &color);
+    g_assert_cmpfloat(color.red, >, color.blue * 1.2);
+    g_assert_true(gtk_widget_get_visible(x));
+    g_assert_true(gtk_widget_get_visible(far));
+    g_assert_nonnull(find_label(link, "Calls unavailable"));
+    model.calls_unavailable = false;
+    mock_main_window_update(window);
+    gtk_widget_get_color(wire, &color);
+    g_assert_cmpfloat(color.blue, >, color.red * 2); /* And back. */
+    GtkWidget *lost = find_named(window, "link-lost");
+    gtk_widget_get_color(find_named(lost, "link-wire"), &color);
+    g_assert_cmpfloat(color.red, >, color.blue * 1.2);
+    g_assert_true(gtk_widget_get_visible(find_named(lost, "link-x")));
+    g_assert_nonnull(find_label(lost, "iPhone not connected"));
+    gtk_window_destroy(GTK_WINDOW(window));
+    g_object_unref(app);
+}
+
+/* Contacts are names in an address book: no avatars or numbers per row, and search by number still works. */
+static void contacts_are_an_address_book(void)
+{
+    MockUiModel model;
+    mock_ui_init(&model);
+    GtkApplication *app = gtk_application_new("org.iblueconnect.MockBookTest", 0);
+    g_application_register(G_APPLICATION(app), NULL, NULL);
+    GtkWidget *window = mock_main_window_new(app, &model, NULL, NULL);
+    GtkWidget *split = find_split(window);
+    GtkWidget *list = (GtkWidget *)adw_navigation_split_view_get_sidebar(ADW_NAVIGATION_SPLIT_VIEW(split));
+    g_assert_null(find_type(list, ADW_TYPE_AVATAR));
+    g_assert_nonnull(find_label(list, "A")); /* First letter of the sample names. */
+    g_assert_null(find_label(list, mock_contacts[0].numbers[0]));
+    gtk_editable_set_text(GTK_EDITABLE(find_search(list, "Search contacts")), "0101234");
+    wait_search();
+    g_assert_nonnull(find_label(list, mock_contacts[0].name));
+    gtk_window_destroy(GTK_WINDOW(window));
+    g_object_unref(app);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -890,10 +1036,14 @@ int main(int argc, char **argv)
     g_test_add_func("/main/keyboard-shortcuts", keyboard_shortcuts);
     g_test_add_func("/main/proportions", comfortable_proportions);
     g_test_add_func("/main/recent-rows", recent_rows_call_back_and_have_centred_separators);
+    g_test_add_func("/main/recent-info", recent_info_opens_the_card);
     g_test_add_func("/main/recent-paging", recents_are_paged_and_not_rebuilt_without_changes);
     g_test_add_func("/main/title-centered", title_is_centered);
     g_test_add_func("/main/live-mode", live_mode_hides_mock_controls);
     g_test_add_func("/main/safe-exit", live_exit_controls_dispatch_guarded_actions);
     g_test_add_func("/main/utf8-sections", non_ascii_names_get_letter_sections);
+    g_test_add_func("/main/tabs", tabs_follow_the_pages);
+    g_test_add_func("/main/link", link_is_blue_when_ready_and_red_with_x_otherwise);
+    g_test_add_func("/main/address-book", contacts_are_an_address_book);
     return g_test_run();
 }

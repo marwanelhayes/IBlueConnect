@@ -19,6 +19,13 @@ void live_apply_contacts_status(MockUiModel *model, const char *status);
 LiveData *live_load(GVariant *contacts, GVariant *recents, gint64 now);
 void live_free(LiveData *data);
 
+/* Ask Siri follows the audio link the phone opens for Siri, the only end-of-session sign the iPhone gives.
+ * session_over means the link closed by itself, so oFono's stale "voice recognition on" can be cleared. */
+#define LIVE_SIRI_START_MS 8000 /* No link by then: the phone did not bring Siri to this laptop. */
+#define LIVE_SIRI_QUIET_MS 2000 /* Shorter gaps do not end a session; clearing would cut Siri off. */
+MockSiriState live_siri_step(MockSiriState state, gboolean audio, gboolean in_call,
+                             gint64 waited_ms, gint64 quiet_ms, gboolean *session_over);
+
 /* Loudness of 16-bit mono samples as 0..1 after a linear amplitude gain; line hiss reads as 0. */
 double live_voice_level(const gint16 *samples, size_t count, double gain);
 

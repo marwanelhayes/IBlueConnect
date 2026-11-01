@@ -307,3 +307,17 @@ void live_voice_meter_stop(LiveVoiceMeter *meter)
     if (meter->reading) g_cancellable_cancel(meter->cancel);
     else meter_free(meter);
 }
+
+MockSiriState live_siri_step(MockSiriState state, gboolean audio, gboolean in_call,
+                             gint64 waited_ms, gint64 quiet_ms, gboolean *session_over)
+{
+    *session_over = FALSE;
+    if (in_call) return MOCK_SIRI_IDLE;
+    if (audio) return MOCK_SIRI_LISTENING;
+    if (state == MOCK_SIRI_LISTENING) {
+        if (quiet_ms < LIVE_SIRI_QUIET_MS) return MOCK_SIRI_LISTENING;
+        *session_over = TRUE;
+        return MOCK_SIRI_IDLE;
+    }
+    return waited_ms < LIVE_SIRI_START_MS ? state : MOCK_SIRI_IDLE;
+}

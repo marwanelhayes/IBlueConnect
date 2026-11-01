@@ -428,8 +428,25 @@ static void microphone_gain_lifts_quiet_talk_but_not_hiss(void)
     assert(live_voice_level(samples, G_N_ELEMENTS(samples), LIVE_MICROPHONE_GAIN) == 0.0);
 }
 
+/* Siri's own audio link drives the button: no guessing timers, and a brief gap does not end the session. */
+static void siri_follows_its_audio_link(void)
+{
+    gboolean over = TRUE;
+    assert(live_siri_step(MOCK_SIRI_STARTING, FALSE, FALSE, 500, 500, &over) == MOCK_SIRI_STARTING && !over);
+    assert(live_siri_step(MOCK_SIRI_STARTING, TRUE, FALSE, 900, 0, &over) == MOCK_SIRI_LISTENING && !over);
+    /* The phone never opened the link: give up, and leave any session on the phone alone. */
+    assert(live_siri_step(MOCK_SIRI_STARTING, FALSE, FALSE, LIVE_SIRI_START_MS, LIVE_SIRI_START_MS, &over) == MOCK_SIRI_IDLE && !over);
+    assert(live_siri_step(MOCK_SIRI_LISTENING, TRUE, FALSE, 60000, 0, &over) == MOCK_SIRI_LISTENING && !over);
+    assert(live_siri_step(MOCK_SIRI_LISTENING, FALSE, FALSE, 5000, LIVE_SIRI_QUIET_MS - 1, &over) == MOCK_SIRI_LISTENING && !over);
+    assert(live_siri_step(MOCK_SIRI_LISTENING, FALSE, FALSE, 5000, LIVE_SIRI_QUIET_MS, &over) == MOCK_SIRI_IDLE && over);
+    /* Siri placed a call: the link now carries the call, and the session must not be touched. */
+    assert(live_siri_step(MOCK_SIRI_LISTENING, TRUE, TRUE, 5000, 0, &over) == MOCK_SIRI_IDLE && !over);
+    assert(live_siri_step(MOCK_SIRI_STARTING, TRUE, TRUE, 500, 0, &over) == MOCK_SIRI_IDLE && !over);
+}
+
 int main(void)
 {
+    siri_follows_its_audio_link();
     voice_level_follows_loudness();
     microphone_gain_lifts_quiet_talk_but_not_hiss();
     device_details_come_from_the_daemon();

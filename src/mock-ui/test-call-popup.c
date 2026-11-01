@@ -308,10 +308,14 @@ static void live_call_shows_actual_number(gconstpointer ignored)
     GtkWindow *window = mock_call_popup_window(f.popup);
     g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(find(GTK_WIDGET(window), "caller-number"))),
                     ==, "555-0102");
+    /* Ringing shows the number under the name; a withheld number is never replaced by a guess. */
+    g_assert_false(gtk_widget_get_visible(find(GTK_WIDGET(window), "caller-number")));
+    g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(find(GTK_WIDGET(window), "call-subtitle"))), ==, "555-0102");
     f.model.dialed_number[0] = '\0';
     mock_call_popup_update(f.popup, &f.model);
     g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(find(GTK_WIDGET(window), "caller-number"))),
                     ==, "");
+    g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(find(GTK_WIDGET(window), "call-subtitle"))), ==, "via iPhone");
     gtk_window_destroy(window);
 }
 
@@ -547,8 +551,8 @@ static GBytes *wave_pixels(GtkWidget *wave)
     return pixels;
 }
 
-/* Counts accent-orange (#e95420) and green (#2ec27e) pixels per half of the strip. */
-typedef struct { guint orange_left, orange_right, green_left, green_right; } WaveColors;
+/* Counts blue (#2f6fff) and green (#2ec27e) pixels per half of the strip. */
+typedef struct { guint blue_left, blue_right, green_left, green_right; } WaveColors;
 
 static WaveColors wave_colors(GBytes *bytes, GtkWidget *wave)
 {
@@ -560,7 +564,7 @@ static WaveColors wave_colors(GBytes *bytes, GtkWidget *wave)
         for (int x = 0; x < width; x++) {
             const guchar *px = p + y * stride + x * 4; /* B, G, R, A */
             gboolean left = x < width / 2;
-            if (px[2] > px[1] * 1.5 && px[1] > px[0] * 1.5) { if (left) c.orange_left++; else c.orange_right++; }
+            if (px[0] > px[1] * 1.5 && px[1] > px[2] * 1.5) { if (left) c.blue_left++; else c.blue_right++; }
             if (px[1] > px[2] * 2 && px[1] > px[0] * 1.3) { if (left) c.green_left++; else c.green_right++; }
         }
     return c;
@@ -583,14 +587,14 @@ static void incoming_voice_is_green_from_the_right(gconstpointer ignored)
     g_assert_null(find(GTK_WIDGET(window), "incoming-level"));
     GBytes *silent = wave_pixels(wave);
     WaveColors quiet = wave_colors(silent, wave);
-    g_assert_cmpuint(quiet.green_left + quiet.green_right + quiet.orange_left + quiet.orange_right, ==, 0);
+    g_assert_cmpuint(quiet.green_left + quiet.green_right + quiet.blue_left + quiet.blue_right, ==, 0);
     g_assert_false(gtk_widget_has_css_class(avatar, "speaking-them"));
     mock_call_popup_set_voice(f.popup, 1.0);
     GBytes *talking = wave_pixels(wave);
     WaveColors them = wave_colors(talking, wave);
     g_assert_cmpuint(them.green_right, >, 20);
     g_assert_cmpuint(them.green_right, >, them.green_left * 3);
-    g_assert_cmpuint(them.orange_left + them.orange_right, ==, 0);
+    g_assert_cmpuint(them.blue_left + them.blue_right, ==, 0);
     g_assert_true(gtk_widget_has_css_class(avatar, "speaking-them"));
     g_assert_false(gtk_widget_has_css_class(avatar, "speaking-me"));
     GBytes *ring = wave_pixels(avatar);
@@ -613,14 +617,10 @@ static void incoming_voice_is_green_from_the_right(gconstpointer ignored)
     gtk_window_destroy(window);
 }
 
-/* Your voice is the Ubuntu accent, enters from the left, and stays flat while muted. */
-static void outgoing_voice_is_accent_from_the_left(gconstpointer ignored)
+/* Your voice is blue, enters from the left, and stays flat while muted. */
+static void outgoing_voice_is_blue_from_the_left(gconstpointer ignored)
 {
     (void)ignored;
-    GtkCssProvider *accent = gtk_css_provider_new();
-    gtk_css_provider_load_from_string(accent, "@define-color accent_color #e95420;");
-    gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(accent),
-                                               GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
     Fixture f = {0};
     mock_ui_init(&f.model);
     f.popup = mock_call_popup_new(app, action, &f);
@@ -633,24 +633,20 @@ static void outgoing_voice_is_accent_from_the_left(gconstpointer ignored)
     GtkWidget *avatar = find(GTK_WIDGET(window), "caller-ring");
     GBytes *silent = wave_pixels(wave);
     mock_call_popup_set_microphone_level(f.popup, 1.0);
-    GBytes *orange = wave_pixels(wave);
-    WaveColors me = wave_colors(orange, wave);
-    g_assert_cmpuint(me.orange_left, >, 20);
-    g_assert_cmpuint(me.orange_left, >, me.orange_right * 3);
+    GBytes *blue = wave_pixels(wave);
+    WaveColors me = wave_colors(blue, wave);
+    g_assert_cmpuint(me.blue_left, >, 20);
+    g_assert_cmpuint(me.blue_left, >, me.blue_right * 3);
     g_assert_cmpuint(me.green_left + me.green_right, ==, 0);
     g_assert_true(gtk_widget_has_css_class(avatar, "speaking-me"));
     GBytes *ring = wave_pixels(avatar);
     WaveColors ring_colors = wave_colors(ring, avatar);
-    g_assert_cmpuint(ring_colors.orange_left + ring_colors.orange_right, >, 20);
+    g_assert_cmpuint(ring_colors.blue_left + ring_colors.blue_right, >, 20);
     g_bytes_unref(ring);
-    gtk_css_provider_load_from_string(accent, "@define-color accent_color #20bbed;");
-    GBytes *blue = wave_pixels(wave);
-    g_assert_false(g_bytes_equal(orange, blue)); /* Follows the system accent. */
-    gtk_css_provider_load_from_string(accent, "@define-color accent_color #e95420;");
     mock_call_popup_set_voice(f.popup, 1.0);
     GBytes *both = wave_pixels(wave);
     WaveColors meet = wave_colors(both, wave);
-    g_assert_cmpuint(meet.orange_left, >, 20);
+    g_assert_cmpuint(meet.blue_left, >, 20);
     g_assert_cmpuint(meet.green_right, >, 20);
     mock_call_popup_set_microphone_level(f.popup, -1);
     for (int i = 0; i < 20; i++) mock_call_popup_set_voice(f.popup, 0.0);
@@ -664,10 +660,7 @@ static void outgoing_voice_is_accent_from_the_left(gconstpointer ignored)
     g_assert_false(gtk_widget_has_css_class(avatar, "speaking-me"));
     click(&f, "compact");
     g_assert_true(gtk_widget_is_visible(wave));
-    gtk_style_context_remove_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(accent));
-    g_object_unref(accent);
     g_bytes_unref(silent);
-    g_bytes_unref(orange);
     g_bytes_unref(blue);
     g_bytes_unref(both);
     g_bytes_unref(unavailable);
@@ -862,7 +855,7 @@ int main(int argc, char **argv)
     g_test_add_data_func("/popup/conference-end", NULL, conference_end_targets_all_calls);
     g_test_add_data_func("/popup/movable", NULL, movable_popup);
     g_test_add_data_func("/popup/voice", NULL, incoming_voice_is_green_from_the_right);
-    g_test_add_data_func("/popup/outgoing-wave", NULL, outgoing_voice_is_accent_from_the_left);
+    g_test_add_data_func("/popup/outgoing-wave", NULL, outgoing_voice_is_blue_from_the_left);
     g_test_add_data_func("/popup/incoming-colors", NULL, incoming_colors);
     g_test_add_data_func("/popup/incoming-compact-height", NULL, incoming_window_has_no_empty_space);
     g_test_add_data_func("/popup/active-short-height", NULL, active_window_is_short);

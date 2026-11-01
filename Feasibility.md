@@ -1,5 +1,10 @@
 # Feasibility record
 
+
+## 2026-11-01 Ask Siri audio link
+
+With the phone connected and idle, PipeWire shows no node with `api.bluez5.profile = headset-audio-gateway`, and `pw-dump` takes about 10 ms. The iPhone sends no end-of-session AT result for Siri, so the app treats that node's presence as the Siri session. Not yet observed during a live Siri press.
+
 ## 2026-10-23 BlueZ crash reports are mpris-proxy
 
 Private read-only triage: `bluetoothd` has not crashed (0 restarts, four boots clean). Ubuntu's notices are `mpris-proxy` (bluez 5.85) SIGSEGVs, 14 in 30 days, mostly 2–5 s after the iPhone connects. IBlueConnect does not use mpris-proxy/MPRIS/AVRCP. Remedy options (mask or auto-restart the user service) await user approval.

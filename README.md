@@ -41,7 +41,9 @@ Live integration status:
 | Dialing, mute, in-call keypad, hold/resume, call waiting, swap, add/merge/end calls, conference management | Connected to daemon operations; full live acceptance is still pending for several controls. |
 | Device status, contacts, recents, battery, voice strip | Connected to daemon data. Apple-inspired bar strip: your voice (system accent) from the left, the caller (green) from the right, avatar ring shows who speaks. Your side is flat while muted; it does not confirm remote audibility. |
 | Siri over Bluetooth | "Ask Siri" button in its own row under the connection card starts Siri on the iPhone (HFP voice recognition); speak and hear Siri through the laptop, e.g. "FaceTime audio Mom". Needs a ready link, no calls, unlocked screen. Live behavior pending. |
-| Appearance | System / Light / Dark / Black in the phone menu (Black is GNOME Dark with near-black surfaces); saved, and the call controller always matches the main window. |
+| Appearance | System / Light / Dark in the phone menu; saved, and the call controller always matches the main window. Spectral and Hanken Grotesk ship with the app (OFL). |
+| Recents | Tap a row to call back; "!" opens that caller's details and calls. |
+| Ask Siri | The button follows the audio link the iPhone opens for Siri, so "speak now" appears when it is ready. Live check pending. |
 | Recents | iPhone-style rows: tap a person to call back; centred separator lines (90% of width); latest 50 calls with "Show more". Planned: "!" button showing all recent calls with that person; virtualized lists for large phone books. |
 | Lock privacy and guarded exit controls | Installed: private windows hide while the screen is locked. Quit, Disconnect, and confirmed Forget require fresh idle state; active or uncertain calls block exit because automatic audio handoff is unavailable. |
 | Audio transfer and preferences | Laptop/phone transfer is not implemented. Only the appearance choice is saved; other preference switches exist only in developer mode and are not persisted. |

@@ -17,6 +17,8 @@ cp "$root/target/iblueconnect-mock" "$root/target/iblueconnect"
 
 install -Dm755 "$root/target/release/iblueconnectd" "$HOME/.local/bin/iblueconnectd"
 install -Dm755 "$root/target/iblueconnect" "$HOME/.local/bin/iblueconnect"
+install -Dm644 -t "$HOME/.local/share/fonts/iblueconnect" "$root"/packaging/fonts/*.ttf
+fc-cache -f "$HOME/.local/share/fonts/iblueconnect" || true
 install -Dm644 "$root/packaging/systemd/iblueconnectd.service" "$HOME/.config/systemd/user/iblueconnectd.service"
 install -Dm644 "$root/packaging/desktop/org.iblueconnect.IBlueConnect.desktop" "$HOME/.local/share/applications/org.iblueconnect.IBlueConnect.desktop"
 systemctl --user daemon-reload

@@ -8,8 +8,7 @@
 typedef enum {
     MOCK_APPEARANCE_SYSTEM,
     MOCK_APPEARANCE_LIGHT,
-    MOCK_APPEARANCE_DARK,
-    MOCK_APPEARANCE_BLACK /* GNOME Dark with near-black surfaces. */
+    MOCK_APPEARANCE_DARK
 } MockAppearance;
 
 /* Ask Siri feedback: waiting for the phone to accept, then the user's turn to speak. */

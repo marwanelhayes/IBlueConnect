@@ -12,7 +12,15 @@ Safe Quit, Disconnect, and confirmed Forget are exposed in the device menu. Fres
 
 **2026-10-23 mid-call connect:** If the phone connects while a call is already in progress, the floating controller opens once, silently, as soon as the screen is unlocked. A call answered on the iPhone after ringing here still stays on the phone.
 
-**2026-10-23 appearance choice (UI installed):** The phone menu offers System / Light / Dark / Black (Black = GNOME Dark with near-black surfaces). The choice is saved per user and applies to the main window and the call controller together; System follows GNOME and is the default. This refines "follows the system light/dark appearance" into the default of a user choice.
+**2026-11-01 Recents "!" (UI installed):** Each Recents row has a "!" that opens the caller's card without calling: the contact's card, or for anyone else their number and calls. A withheld number offers no Call. This delivers the "!" planned on 2026-10-23. The keypad is smaller (keys 56 px, digits 27 px) and still fits the default window.
+
+**2026-11-01 luxury design (installed, live acceptance pending):** Spectral for names and numbers, Hanken Grotesk elsewhere; black and white surfaces from GNOME's light and dark; blue link, red for no link, Decline, End and Missed, green Answer. Your voice bars are blue instead of the system accent. Text-only bottom tabs; outlined Ask Siri. The app ships both fonts with their OFL licences.
+
+**2026-11-01 Ask Siri follows its audio link (installed, live acceptance pending):** "Starting Siri…" lasts until the phone opens the hands-free audio link, then "Listening — speak now" until the link stays closed for 2 s, then the stale voice-recognition flag is cleared so the next press is one command. No link in 8 s returns to Ask Siri. This replaces the 8 s guessed prompt.
+
+**2026-11-01 Black removed (UI installed):** User decision: Black did not work, and GNOME Dark remains. The phone menu offers System / Light / Dark; a saved `black` falls back to System.
+
+**2026-10-23 appearance choice (UI installed; Black removed 2026-11-01):** The phone menu offered System / Light / Dark / Black (Black = GNOME Dark with near-black surfaces). The choice is saved per user and applies to the main window and the call controller together; System follows GNOME and is the default. This refines "follows the system light/dark appearance" into the default of a user choice.
 
 **2026-10-23 controller style (UI installed; one-row update):** All in-call buttons, including Hold/Resume/Merge/Swap/Add call, share one row of tiles; the controller widens to fit instead of adding a row. The whole call controller follows the voice strip: soft rounded tiles (Mute, Audio, Keypad with captions under icons; Mute keeps the crossed-microphone icon and reads "Muted"), a wide solid-red End pill, equal-width Ignore/Decline/Answer pills, bold timer. This supersedes the 2026-10-04 icon-only Mute.
 

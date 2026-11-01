@@ -4,7 +4,7 @@
 #include <gtk/gtk.h>
 #include "mock-state.h"
 
-/* Persists the System/Light/Dark/Black choice in ~/.config/iblueconnect/appearance.ini and applies it. */
+/* Persists the System/Light/Dark choice in ~/.config/iblueconnect/appearance.ini and applies it. */
 MockAppearance appearance_parse(const char *name);
 const char *appearance_name(MockAppearance appearance);
 MockAppearance appearance_load(void);
