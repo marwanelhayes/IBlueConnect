@@ -1,6 +1,10 @@
 # Feasibility record
 
 
+## 2026-11-01 voice quality limits
+
+Source reading and read-only checks. PipeWire's oFono backend offers mSBC only when `bluez5.enable-msbc` is set, and it is not set. A read-only sample of a live user-operated call on the current stack confirmed `cvsd` at 8000 Hz in both directions, microphone → RNNoise → phone and phone → headset output active, 0 `pw-top` errors in a few seconds, and the "Transport endpoint is not connected" warning twice on that working call. The sample was too short to judge the reported "pixelated" sound. oFono 1.31 and 2.18 know only CVSD and mSBC, so LC3 is unreachable through oFono. The earlier mSBC failure ran on the 24.04 stack without a capture, so its cause is unknown. The "Transport endpoint is not connected" log line is very likely a routine warning on each accepted connection (inference from source), so it is weak evidence of a SCO failure. Details and citations: `Voice_Quality.md`.
+
 ## 2026-11-01 Ask Siri audio link
 
 With the phone connected and idle, PipeWire shows no node with `api.bluez5.profile = headset-audio-gateway`, and `pw-dump` takes about 10 ms. The iPhone sends no end-of-session AT result for Siri, so the app treats that node's presence as the Siri session. Not yet observed during a live Siri press.
@@ -172,6 +176,10 @@ The daemon now pulls `cch` after `pb` in the same sync; each fails independently
 Real incoming-call acceptance of the popup, two-way audio and DTMF under the permanent backend, default-device changes, both laptop-initiated handoff directions, lock/DND popup behavior, missed-call notifications, and the rest of the specification's acceptance matrix. FaceTime Audio cannot be started over HFP (cellular only) and is outside V1.
 
 ## Audio quality baseline on the permanent oFono backend
+
+2026-11-03: second mSBC trial on PipeWire 1.6.2 / WirePlumber 0.5.13 / kernel 7.0 / oFono 1.31 **worked**: a user-operated cellular call ran `msbc` at 16000 Hz both ways with no errors in a short sample, and the user heard a clearer, less noisy incoming voice. The 24.04 failure is not reproduced on this stack. mSBC is now permanent on WirePlumber 0.5+. Details in `Voice_Quality.md`.
+
+2026-11-03, user observation: on laptop-routed calls the received voice sounded noisy on cellular calls but not on FaceTime Audio calls; the user's own voice was fine. Both cross the same HFP link. See `Voice_Quality.md`.
 
 During a user-operated cellular call routed to the laptop, the user described the incoming voice as muffled and pixelated. The user's own voice was clear to the other person, but keyboard and fan noise were conspicuous compared with Discord using the same C-Media input and output. The incoming voice was clearer when the user manually moved that call's audio to the iPhone. No agent placed or controlled the call.
 

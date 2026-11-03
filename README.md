@@ -196,7 +196,7 @@ The build script downloads the pinned [noise-suppression-for-voice v1.10 source]
 sh packaging/rnnoise.sh rollback
 ```
 
-The filter reduces noise from the laptop microphone. It does not address the incoming voice, which was reported muffled on the current CVSD call route.
+The filter reduces noise from the laptop microphone. It does not address the incoming voice. Since 2026-11-03, calls use the 16 kHz mSBC codec instead of 8 kHz CVSD on WirePlumber 0.5+, which made the incoming voice clearer on a test call. Cellular calls can still sound narrow when the carrier delivers narrowband audio. `Voice_Quality.md` lists further options.
 
 ## Checks
 

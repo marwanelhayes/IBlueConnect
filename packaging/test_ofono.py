@@ -93,7 +93,7 @@ class OfonoScriptsTest(unittest.TestCase):
         self.assertTrue(config.exists(), 'WirePlumber 0.5 must receive a conf.d fragment')
         self.assertIn('monitor.bluez.properties', config.read_text())
         self.assertIn('bluez5.hfphsp-backend = "ofono"', config.read_text())
-        self.assertNotIn('msbc', config.read_text())
+        self.assertIn('bluez5.enable-msbc = true', config.read_text())
         self.assertFalse((self.root / LEGACY).exists())
 
     def test_unsafe_or_unverifiable_call_state_blocks_changes(self):
@@ -174,6 +174,7 @@ class OfonoScriptsTest(unittest.TestCase):
         self.env['TEST_VERSION'] = '0.4.17'
         self.assertEqual(self.run_script('ofono-enable.sh').returncode, 0)
         self.assertTrue((self.root / LEGACY).exists())
+        self.assertNotIn('msbc', (self.root / LEGACY).read_text(), 'mSBC failed on the WirePlumber 0.4 stack')
         self.assertFalse((self.root / MODERN).exists())
 
     def test_noise_filter_targets_only_outgoing_phone_audio(self):

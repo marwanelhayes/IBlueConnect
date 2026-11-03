@@ -2,6 +2,22 @@
 
 Date: 2026-09-24. Workspace: `/home/marwan-ahmed/Work/IBlueConnect`. Supersedes the older /tmp handoffs.
 
+## 2026-11-03 mSBC wideband call audio — works, permanent, uncommitted
+
+On a user-operated cellular call the same day, both HFP directions ran `codec=msbc` at 16000 Hz, the daemon reported `ready/active`, and `ERR` stayed 0 over about 6 seconds. The user confirmed the incoming voice was clearer and less noisy and that the other person heard them clearly. After the call ended, `ofono-enable.sh` was made to write the line on WirePlumber 0.5+ only (0.4 keeps it off; it failed there). `test_ofono.py` asserted it first and failed, then all 12 tests passed. The live file was rewritten from `--print-config`; it differs from the tested call only by a comment, so no restart was needed. Next optional steps (user's choice): VoLTE/HD Voice on the iPhone; presence EQ on the incoming voice (Rank 2 in `Voice_Quality.md`). The notes below are from before the call.
+
+**mSBC retry applied (2026-11-03), not yet tested on a call.** User approved. With the phone disconnected (0 connected devices, 0 HFP nodes, daemon phase `unavailable`), `bluez5.enable-msbc = true` was added to the live `51-iblueconnect-ofono.conf`; backup at `target/rollback-2026-11-03/51-iblueconnect-ofono.conf.pre-msbc`. WirePlumber then oFono were restarted; all services active. WirePlumber logged `Failed to start HFP/HSP backend ofono` once at the oFono restart, as it has 19 times before on normal restarts. The daemon was not restarted. A 30-minute private `btmon` capture saw no phone connection, so nothing about the codec is known yet. `packaging/ofono-enable.sh` was not changed: re-running it drops the line. Undo: restore the backup (or `ofono-rollback.sh`), then restart WirePlumber and oFono with no call active.
+
+**Next:** user connects the iPhone manually and makes a call to the laptop. Check the HFP nodes read `codec=msbc` at 16000 Hz with two-way audio (see the Step 3 table in `Voice_Quality.md`). If it works, add the line to `print_config` in `ofono-enable.sh`, test-first in `packaging/test_ofono.py`. If laptop audio is silent, move the call to the iPhone, wait for the user to confirm the call ended, then restore the backup.
+
+## 2026-11-03 received-voice observation — notes only
+
+User observed on a live call: own voice fine, received voice noisy on cellular calls but not on FaceTime Audio calls (same HFP link). Recorded in `Voice_Quality.md` and `Feasibility.md`. Next step unchanged: the instrumented `bluez5.enable-msbc = true` retry, awaiting user approval. Nothing changed.
+
+## 2026-11-01 voice quality research — report only, nothing applied, uncommitted
+
+User asked for free or open-source ways to improve received voice and sent voice after noise cancellation. Findings are in `Voice_Quality.md`; no code, config or service changed and no call was placed. Received: one instrumented `bluez5.enable-msbc = true` retry on the current stack, plus a small presence EQ. Sent: keep RNNoise; fix mic gain (+30 dB, hardware maximum), the iPhone's second echo/noise pass (wired headset only), and the unset RNNoise controls, then add high-pass, compressor and limiter. DeepFilterNet only if RNNoise is still the audible problem. Moving off oFono would need a new user decision. None of it is tested on a live call.
+
 ## 2026-11-01 smaller keypad and "!" caller card — UI installed, uncommitted
 
 User: the keypad looked too big; add the deferred "!" that shows contact info like a normal phone. Keypad: keys 72 → 56 px tall, digits 37 → 27 px (weight 300), number 31 → 26 px, grid centred and narrower, Call a narrower centred pill, content centred in the page. Each Recents row now has a "!" (`recent-info`) beside the time. It never calls. A contact opens their existing card (numbers, Call, Recent calls). A caller who is not a contact gets a card with their number and only that number's calls. A withheld number shows "Unknown caller" with no Call and no numbers, and its row can no longer be tapped to call. Back and Escape say and go to Recents; leaving the card by any route returns Contacts to its list. `/main/recent-info` and the new size limits in `/main/default-keypad` failed first. 54 UI tests on 26.04 and 24.04. UI installed (previous binary `target/rollback-2026-11-01/iblueconnect.pre-keypad-info`), self-test OK, daemon untouched. Renders refreshed in `design/luxury/gtk-render/`. Known, older: `selected_contact` is an index, so a contact sync while a card is open could re-render another contact. Live check pending.

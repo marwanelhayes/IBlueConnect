@@ -6,6 +6,10 @@ Status: product decisions agreed, including active-call exit behavior; three ind
 
 Safe Quit, Disconnect, and confirmed Forget are exposed in the device menu. Fresh known-idle call state, no HFP audio nodes, no pending call/sync action, and a confirmed unlocked session are required. Disconnect targets only the phone already selected by oFono and verifies BlueZ disconnection; Forget then clears app-owned contact/history caches, preserving system Bluetooth pairing. Monitoring stays paused until explicitly resumed; resuming never initiates Bluetooth. Quit stops the daemon normally; closing the main window still preserves background monitoring. **Active-call automatic audio handoff remains unimplemented:** the available backend has no exposed, verified phone-route transfer operation. Active or unknown calls block these actions with an explanation instead of risking interruption. This is a guarded partial implementation of the original handoff-and-exit requirement, not full V1 acceptance.
 
+**2026-11-03 wideband call audio (applied, verified on one call):** oFono calls now use mSBC (16 kHz) instead of CVSD (8 kHz) on WirePlumber 0.5+; the user confirmed clearer incoming voice. See `Voice_Quality.md`.
+
+**2026-11-01 voice quality (research only, not applied):** `Voice_Quality.md` records the recommended free or open-source paths for received and sent voice. Call audio behavior is unchanged.
+
 **2026-10-27 Answer double-click guard (UI installed):** End takes Answer's place when a call is answered, so End ignores clicks for twice the desktop double-click time (800 ms by default) after the controller switches from ringing to active. A double-click on Answer no longer hangs up.
 
 **2026-10-24 shorter in-call controller (UI installed):** The active-call controller is about 184 px tall instead of 261. The caller's number moves into the subtitle under the name (it replaces "via iPhone" there), the voice strip is 40 px tall instead of 64, the "You"/caller labels under the strip are gone, and the hidden keypad no longer leaves a gap. Incoming and outgoing layouts are unchanged.

@@ -50,7 +50,9 @@ table.insert(bluez_monitor.rules, {
 EOF
 else
     printf '%s\n' '# IBlueConnect: oFono owns HFP calls. Remove this file to restore the native backend.' \
-        'monitor.bluez.properties = {' '  bluez5.hfphsp-backend = "ofono"' '}'
+        'monitor.bluez.properties = {' '  bluez5.hfphsp-backend = "ofono"' \
+        '  # 16 kHz wideband call audio; verified on WirePlumber 0.5 (it failed on 0.4).' \
+        '  bluez5.enable-msbc = true' '}'
     cat <<'EOF'
 # Use RNNoise only for outgoing phone audio; a missing filter falls back to the usual mic.
 monitor.bluez.rules = [
